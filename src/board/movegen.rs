@@ -105,7 +105,8 @@ impl Board {
 
     fn generate_pseudo_captures(&self, moves: &mut Vec<Move>) {
         let us = self.side_to_move();
-        let enemy = self.pieces_color(!us);
+        // Never generate captures of the enemy king (would leave an illegal position).
+        let enemy = self.pieces_color(!us) & !self.pieces(PieceType::King);
 
         self.generate_pawn_captures(us, moves);
         self.generate_piece_moves(us, enemy, moves);
@@ -140,7 +141,7 @@ impl Board {
     }
 
     fn generate_pawn_captures(&self, us: Color, moves: &mut Vec<Move>) {
-        let enemy = self.pieces_color(!us);
+        let enemy = self.pieces_color(!us) & !self.pieces(PieceType::King);
         let promo_rank = promotion_rank(us);
         let ep_square = self.ep_square();
 

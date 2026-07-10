@@ -1,4 +1,4 @@
-//! OpenChess binary: `openchess tui` for the terminal UI; default is UCI (stub until P7).
+//! OpenChess binary: `openchess tui` for the terminal UI; default is UCI.
 
 fn main() {
     openchess::lookup::initialize();
@@ -12,7 +12,7 @@ fn main() {
             }
         }
         Some("uci") | None => {
-            eprintln!("OpenChess: UCI loop not implemented yet. Try: openchess tui");
+            openchess::uci::message_loop();
         }
         Some(other) => {
             eprintln!("unknown command: {other}");

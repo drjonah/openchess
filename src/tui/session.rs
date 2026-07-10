@@ -1,11 +1,16 @@
-//! Session: real [`Board`] + play modes + stub search.
+//! Session: real [`Board`] + play modes + engine search.
 //!
 //! Player input accepts one move: short algebraic (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
 
 use super::game::{AnalyzedGame, PlyRecord};
 use crate::board::Board;
+use crate::search::{self, Limits, SearchResult};
+use crate::transposition::TranspositionTable;
 use crate::types::{Color, Move, Piece, PieceType, Square};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -63,6 +68,13 @@ impl PlayMode {
     }
 }
 
+/// Background search job started by [`EngineSession::go`].
+struct LiveSearch {
+    stop: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<SearchResult>>>,
+    handle: Option<JoinHandle<()>>,
+}
+
 pub struct EngineSession {
     board: Board,
     /// Moves applied this game (for undo via [`Board::unmake`]).
@@ -79,6 +91,8 @@ pub struct EngineSession {
     analyzed: Option<AnalyzedGame>,
     /// User forced the eval bar on (also shown automatically while browsing an imported game).
     eval_bar_forced: bool,
+    /// Active engine search, if any.
+    live: Option<LiveSearch>,
 }
 
 impl EngineSession {
@@ -106,6 +120,7 @@ impl EngineSession {
             ),
             analyzed: None,
             eval_bar_forced: config.tui.show_eval_bar,
+            live: None,
         }
     }
 
@@ -388,6 +403,12 @@ impl EngineSession {
     }
 
     fn stop_thinking_quiet(&mut self) {
+        if let Some(mut live) = self.live.take() {
+            live.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = live.handle.take() {
+                let _ = handle.join();
+            }
+        }
         self.info.thinking = false;
         self.go_started = None;
         self.pending_limits = None;
@@ -432,11 +453,50 @@ impl EngineSession {
         } else {
             "Analyzing (will not move)…".into()
         };
+
+        let search_limits = Limits {
+            depth: limits.depth.map(|d| d as i32),
+            movetime: limits.movetime.or(Some(Duration::from_millis(400))),
+            nodes: None,
+        };
+        // If only depth is set, don't also force a short movetime.
+        let search_limits = if limits.depth.is_some() && limits.movetime.is_none() {
+            Limits {
+                depth: limits.depth.map(|d| d as i32),
+                movetime: None,
+                nodes: None,
+            }
+        } else {
+            search_limits
+        };
+
+        let mut board = self.board.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let result = Arc::new(Mutex::new(None));
+        let stop_t = Arc::clone(&stop);
+        let result_t = Arc::clone(&result);
+
+        let handle = std::thread::spawn(move || {
+            let mut tt = TranspositionTable::new(16);
+            let out = search::go(&mut board, search_limits, &mut tt, &stop_t, None);
+            if let Ok(mut slot) = result_t.lock() {
+                *slot = Some(out);
+            }
+        });
+
+        self.live = Some(LiveSearch {
+            stop,
+            result,
+            handle: Some(handle),
+        });
     }
 
     pub fn stop(&mut self) {
         if self.info.thinking {
-            self.finish_stub_search(true);
+            if let Some(live) = &self.live {
+                live.stop.store(true, Ordering::Relaxed);
+            }
+            self.finish_search(true);
         }
     }
 
@@ -447,50 +507,82 @@ impl EngineSession {
         let Some(started) = self.go_started else {
             return;
         };
-        let elapsed = started.elapsed();
-        let limits = self.pending_limits.unwrap_or_default();
-        let target = limits
-            .movetime
-            .unwrap_or_else(|| Duration::from_millis(400));
-        let depth_cap = limits.depth.unwrap_or(8);
-        let progress = (elapsed.as_secs_f32() / target.as_secs_f32()).clamp(0.0, 1.0);
-        self.info.depth = ((progress * depth_cap as f32) as u32).max(1).min(depth_cap);
-        self.info.nodes = (elapsed.as_millis() as u64).saturating_mul(1200);
-        self.info.time = elapsed;
-        self.info.score_cp = stub_eval_cp(&self.board);
-        if let Some(mv) = stub_pick_move(&self.board) {
-            self.info.pv = mv.to_string();
-        }
-        if elapsed >= target {
-            self.finish_stub_search(false);
+        self.info.time = started.elapsed();
+
+        let ready = self
+            .live
+            .as_ref()
+            .and_then(|l| l.result.lock().ok())
+            .map(|g| g.is_some())
+            .unwrap_or(false);
+
+        if ready {
+            self.finish_search(false);
         }
     }
 
-    fn finish_stub_search(&mut self, stopped: bool) {
-        let mv = stub_pick_move(&self.board);
+    fn finish_search(&mut self, stopped: bool) {
+        if let Some(mut live) = self.live.take() {
+            live.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = live.handle.take() {
+                let _ = handle.join();
+            }
+            let result = live
+                .result
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take());
+            self.apply_search_result(result, stopped);
+        } else {
+            self.info.thinking = false;
+            self.go_started = None;
+            self.pending_limits = None;
+            self.status = "No legal moves".into();
+        }
+    }
+
+    fn apply_search_result(&mut self, result: Option<SearchResult>, stopped: bool) {
         self.info.thinking = false;
         self.go_started = None;
         self.pending_limits = None;
         let apply = self.apply_on_finish;
-        if let Some(mv) = mv {
-            self.info.bestmove = Some(mv.to_string());
-            self.info.pv = mv.to_string();
-            if apply {
-                match self.play_move(mv) {
-                    Ok(()) => {
-                        self.status = if stopped {
-                            format!("Stopped → played {mv}")
-                        } else {
-                            format!("Bot plays {mv}")
-                        };
-                    }
-                    Err(e) => self.status = format!("Engine move failed: {e}"),
+
+        let Some(result) = result else {
+            self.status = "Search failed".into();
+            return;
+        };
+
+        self.info.depth = result.depth.max(0) as u32;
+        self.info.score_cp = result.score;
+        self.info.nodes = result.nodes;
+        self.info.time = result.time;
+        self.info.pv = result
+            .pv
+            .iter()
+            .map(|m| m.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if result.best_move.is_none() {
+            self.status = "No legal moves".into();
+            return;
+        }
+
+        let mv = result.best_move;
+        self.info.bestmove = Some(mv.to_string());
+        if apply {
+            match self.play_move(mv) {
+                Ok(()) => {
+                    self.status = if stopped {
+                        format!("Stopped → played {mv}")
+                    } else {
+                        format!("Bot plays {mv}")
+                    };
                 }
-            } else {
-                self.status = format!("Best move: {mv} (board unchanged)");
+                Err(e) => self.status = format!("Engine move failed: {e}"),
             }
         } else {
-            self.status = "No legal moves".into();
+            self.status = format!("Best move: {mv} (board unchanged)");
         }
     }
 }
@@ -685,49 +777,6 @@ fn parse_san_body(body: &str) -> Result<(PieceType, Disambig, &str), String> {
         return Err(format!("bad move: {body}"));
     };
     Ok((piece, dis, to))
-}
-
-fn stub_eval_cp(board: &Board) -> i32 {
-    let mut score = 0i32;
-    for sq in Square::all() {
-        let piece = board.piece_on(sq);
-        let Some(pt) = piece.piece_type() else {
-            continue;
-        };
-        let Some(color) = piece.color() else {
-            continue;
-        };
-        let v = match pt {
-            PieceType::Pawn => 100,
-            PieceType::Knight | PieceType::Bishop => 300,
-            PieceType::Rook => 500,
-            PieceType::Queen => 900,
-            PieceType::King => 0,
-        };
-        if color == Color::White {
-            score += v;
-        } else {
-            score -= v;
-        }
-    }
-    if board.side_to_move() == Color::Black {
-        -score
-    } else {
-        score
-    }
-}
-
-fn stub_pick_move(board: &Board) -> Option<Move> {
-    let moves = board.legal_moves();
-    // Prefer a central pawn push if present, else first legal.
-    moves
-        .iter()
-        .copied()
-        .find(|m| {
-            board.piece_on(m.from()).piece_type() == Some(PieceType::Pawn)
-                && (m.to().file() == 3 || m.to().file() == 4)
-        })
-        .or_else(|| moves.first().copied())
 }
 
 #[cfg(test)]

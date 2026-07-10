@@ -168,7 +168,8 @@ flowchart TB
   - **Parallel-ok:** P1-06, P1-07  
   - **Deliverable:** SEE(move) → material sequence score; used later by P3/P5  
   - **Acceptance:** Textbook winning/losing captures return correct sign on a fixture set  
-  - **Research:** chesswiki Move Ordering / SEE · reckless `see.rs`
+  - **Research:** chesswiki Move Ordering / SEE · reckless `see.rs`  
+  - **Note:** First-move promotion bonus modeled in swap; recapture promotions still unmodeled.
 
 - [x] **P1-09** — FEN + UCI move parsing  
   - **Deps:** P1-04, P1-05  
@@ -197,42 +198,43 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P2-01** — Negamax alpha-beta + material leaf  
+- [x] **P2-01** — Negamax alpha-beta + material leaf  
   - **Deps:** P1-10, P6-01  
   - **Parallel-ok:** P3-01, P4-02, P7-02  
   - **Deliverable:** Fail-soft αβ; side-to-move relative scores; root best move  
   - **Acceptance:** From startpos `go depth 4` returns a legal move; no crashes on checks  
   - **Research:** chesswiki Baseline stack · stockfish search progression
 
-- [ ] **P2-02** — Iterative deepening  
+- [x] **P2-02** — Iterative deepening  
   - **Deps:** P2-01  
   - **Parallel-ok:** P3-02, P4-02, P7-02  
   - **Deliverable:** Depth 1..N loop; always keep last completed best move; stop between iterations  
   - **Acceptance:** Abort mid-ID still emits prior bestmove; deeper depth can change move  
   - **Research:** reckless §6.1 · chesswiki Iterative deepening
 
-- [ ] **P2-03** — Quiescence search  
+- [x] **P2-03** — Quiescence search  
   - **Deps:** P2-01, P1-08 (SEE helpful), P6-01  
   - **Parallel-ok:** P2-02, P3-02  
   - **Deliverable:** At depth ≤ 0 search captures (optional checks); stand-pat; delta/SEE prune hooks  
   - **Acceptance:** Hanging-queen positions no longer evaluate as quiet wins at shallow depth  
-  - **Research:** chesswiki Quiescence · reckless §6.4 · stockfish §9.4
+  - **Research:** chesswiki Quiescence · reckless §6.4 · stockfish §9.4  
+  - **Note:** QS probes/stores TT at depth 0; in-check uses `MovePicker::evasion`.
 
-- [ ] **P2-04** — Search stack + PV table  
+- [x] **P2-04** — Search stack + PV table  
   - **Deps:** P2-01  
   - **Parallel-ok:** P2-02, P2-03  
   - **Deliverable:** Per-ply stack (static eval slot, move count, killers hook, PV triangle/array)  
   - **Acceptance:** UCI `info` can print a legal PV of length ≥ depth on quiet positions  
   - **Research:** stockfish `Stack` / `RootMove` · reckless `stack.rs`
 
-- [ ] **P2-05** — Aspiration windows  
+- [x] **P2-05** — Aspiration windows  
   - **Deps:** P2-02, P2-04  
   - **Parallel-ok:** P2-06, P3-03  
   - **Deliverable:** Narrow root window around previous score; widen + re-search on fail  
   - **Acceptance:** Stable positions often complete without full-window re-search; fail-high/low still correct  
   - **Research:** reckless §6.1 · stockfish §9.1
 
-- [ ] **P2-06** — PVS with Root / PV / NonPV node types  
+- [x] **P2-06** — PVS with Root / PV / NonPV node types  
   - **Deps:** P2-02, P2-03, P3-02, P4-02  
   - **Parallel-ok:** P2-05, P5-01 (after this lands)  
   - **Deliverable:** First move full window; siblings null-window + re-search; node-type specialization  
@@ -249,19 +251,20 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P3-01** — Move list + score/pick-best API  
+- [x] **P3-01** — Move list + score/pick-best API  
   - **Deps:** P1-05  
   - **Parallel-ok:** P1-10, P4-*, P2-01  
   - **Deliverable:** Scored move list; partial sort / pick-best without full sort requirement  
   - **Acceptance:** Unit test: highest score returned first repeatedly  
   - **Research:** chesswiki “never generate unsorted” · reckless movepick
 
-- [ ] **P3-02** — Staged MovePicker  
+- [x] **P3-02** — Staged MovePicker  
   - **Deps:** P3-01, P1-08, P4-02 (TT move; stub hash move OK early)  
   - **Parallel-ok:** P2-03, P2-06  
   - **Deliverable:** Stages: TT → good noisy (SEE≥0) → quiets → bad noisy; evasion/qsearch variants  
   - **Acceptance:** In cut-node fixtures, TT/good-capture tried before losing captures  
-  - **Research:** reckless §6.5 stages · stockfish `MovePicker` stages
+  - **Research:** reckless §6.5 stages · stockfish `MovePicker` stages  
+  - **Note:** `Main` / `Qsearch` / `Evasion` picker kinds landed.
 
 - [ ] **P3-03** — Killers + quiet history (butterfly)  
   - **Deps:** P3-02, P2-04  
@@ -287,14 +290,14 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P4-01** — TT API stub + key contract  
+- [x] **P4-01** — TT API stub + key contract  
   - **Deps:** P1-01 (key type), P1-06 preferred  
   - **Parallel-ok:** all of P1 after types  
   - **Deliverable:** `probe(key) → Option<Entry>`, `store(...)`, `clear`, `new_search` age bump  
   - **Acceptance:** Store then probe same key returns move/depth/bound; wrong key misses  
   - **Research:** chesswiki TT contents
 
-- [ ] **P4-02** — Clustered TT + replacement  
+- [x] **P4-02** — Clustered TT + replacement  
   - **Deps:** P4-01, P1-06  
   - **Parallel-ok:** P2-*, P3-02, P7 Hash option  
   - **Deliverable:** Multi-entry clusters; exact/lower/upper; age; depth-preferred replacement; hashfull  
@@ -377,7 +380,7 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P6-01** — Material evaluation  
+- [x] **P6-01** — Material evaluation  
   - **Deps:** P1-02  
   - **Parallel-ok:** P1-05..P1-10, P7-01  
   - **Deliverable:** Sum piece values; STM-relative  
@@ -436,7 +439,7 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P7-01** — Minimal UCI loop  
+- [x] **P7-01** — Minimal UCI loop  
   - **Deps:** P1-09  
   - **Parallel-ok:** P1-10, P2-01, P6-01  
   - **Deliverable:** `uci`, `isready`, `ucinewgame`, `position`, `go`, `stop`, `quit` → `bestmove`  
@@ -496,7 +499,7 @@ flowchart TB
   - **Deliverable:** Engine panel shows depth/score/PV/nodes/time while thinking; on engine turn applies `bestmove`; human vs engine color choice  
   - **Acceptance:** With search available, `go depth N` (or movetime) updates panel then plays a legal move; Stop cancels thinking  
   - **Research:** ARCHITECTURE §7 · stockfish UCI info lines
-  - **Note:** Stub search in `tui/session.rs` until P2; swap to real search entry when available.
+  - **Note:** Wired to real `search::go` via background thread in `tui/session.rs`.
 ---
 
 ## P8 — Scale & science

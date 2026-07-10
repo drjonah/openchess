@@ -4,7 +4,8 @@ mod common;
 
 use common::{init, sq};
 use openchess::board::Board;
-use openchess::types::score::{BISHOP_VALUE, PAWN_VALUE, QUEEN_VALUE, ROOK_VALUE};
+use openchess::types::score::{BISHOP_VALUE, KNIGHT_VALUE, PAWN_VALUE, QUEEN_VALUE, ROOK_VALUE};
+use openchess::types::PieceType;
 use openchess::{Color, Move, Piece};
 
 #[test]
@@ -118,4 +119,30 @@ fn en_passant_capture_gains_pawn() {
         board.see(Move::en_passant(sq("e5"), sq("d6"))),
         PAWN_VALUE
     );
+}
+
+#[test]
+fn undefended_capture_promotion_is_strongly_positive() {
+    init();
+    let mut board = Board::empty();
+    board.put_piece(Piece::WhitePawn, sq("a7"));
+    board.put_piece(Piece::BlackKnight, sq("b8"));
+    board.set_side_to_move(Color::White);
+    let promo = Move::promotion(sq("a7"), sq("b8"), PieceType::Queen);
+    // Capture knight + (queen − pawn) with no recapture.
+    assert_eq!(board.see(promo), KNIGHT_VALUE + QUEEN_VALUE - PAWN_VALUE);
+}
+
+#[test]
+fn capture_promotion_into_defended_square_reflects_recapture() {
+    init();
+    let mut board = Board::empty();
+    board.put_piece(Piece::WhitePawn, sq("a7"));
+    board.put_piece(Piece::BlackKnight, sq("b8"));
+    // Black rook defends b8; after promo-capture, black takes the queen.
+    board.put_piece(Piece::BlackRook, sq("b1"));
+    board.set_side_to_move(Color::White);
+    let promo = Move::promotion(sq("a7"), sq("b8"), PieceType::Queen);
+    // Gain knight + (Q−P), then lose the queen on the recapture → knight − pawn.
+    assert_eq!(board.see(promo), KNIGHT_VALUE - PAWN_VALUE);
 }

@@ -32,9 +32,10 @@ impl Board {
     ///
     /// This is the classic "swap algorithm": pin/legality of intermediate
     /// captures is *not* checked (a king "capturing" is allowed to appear in
-    /// the swap list, valued high so it is only ever used last), and
-    /// promotion bonuses are not modeled — the moving/attacking piece keeps
-    /// its pre-move type for valuation purposes.
+    /// the swap list, valued high so it is only ever used last). The *first*
+    /// move's promotion bonus is modeled (gain includes promo − pawn, and the
+    /// piece left on the target is the promoted type); promotions during later
+    /// recaptures in the swap are not.
     pub fn see(&self, m: Move) -> Value {
         let from = m.from();
         let to = m.to();
@@ -65,6 +66,10 @@ impl Board {
 
         let mut gain = [0 as Value; 32];
         gain[0] = initial_captured_value;
+        if let Some(promo) = m.promotion_piece() {
+            gain[0] += piece_value(promo) - piece_value(PieceType::Pawn);
+            attacker_type = promo;
+        }
         let mut depth: usize = 0;
         let mut side = !us;
 
