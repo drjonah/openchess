@@ -61,7 +61,7 @@ openchess/
     │
     ├── lookup.rs           # P1 — magic/attack tables, init-once
     │
-    ├── chesscom/           # optional (`feature = "chesscom"`) — fetch PGN by URL/username; bin `openchess-chesscom`; not part of TUI import
+    ├── chesscom/           # default feature — fetch PGN by URL/username; `openchess chesscom` CLI + TUI import
     │
     ├── search/             # P2 + P5 — brain
     │   ├── mod.rs          # iterative deepening entry

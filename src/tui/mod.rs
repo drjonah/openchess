@@ -2,6 +2,7 @@
 
 mod board_view;
 mod engine_panel;
+mod piece_art;
 mod eval_bar;
 mod game;
 #[cfg(feature = "chesscom")]
@@ -20,7 +21,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use import::ImportResult;
-use input::{InputAction, MoveInput, PromptKind, HELP_TEXT};
+use input::{InputAction, MoveInput, PromptKind, HELP_PAGES};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use session::{EngineSession, PlayMode};
@@ -67,6 +68,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
     }
     let mut input = MoveInput::default();
     let mut show_help = false;
+    let mut help_page: usize = 0;
     let mut show_settings = false;
     let mut settings = SettingsOverlay::default();
     #[cfg(feature = "chesscom")]
@@ -82,7 +84,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 &session,
                 &input,
                 &config,
-                show_help,
+                show_help.then_some(help_page),
                 show_settings.then_some(&settings),
                 #[cfg(feature = "chesscom")]
                 game_picker.as_ref(),
@@ -104,6 +106,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                     show_help = false;
                     session.set_status(format!("{} — press ? for help", session.mode().title()));
+                }
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('[') => {
+                    if help_page == 0 {
+                        help_page = HELP_PAGES.len() - 1;
+                    } else {
+                        help_page -= 1;
+                    }
+                    session.set_status(help_status(help_page));
+                }
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(']') => {
+                    help_page = (help_page + 1) % HELP_PAGES.len();
+                    session.set_status(help_status(help_page));
                 }
                 _ => {}
             }
@@ -137,7 +151,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             InputAction::Quit => break,
             InputAction::Help => {
                 show_help = true;
-                session.set_status("Help — ?/Esc to close");
+                help_page = 0;
+                session.set_status(help_status(help_page));
             }
             InputAction::OpenSettings => {
                 show_settings = true;
@@ -288,7 +303,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             &session,
                             &input,
                             &config,
-                            show_help,
+                            show_help.then_some(help_page),
                             show_settings.then_some(&settings),
                             game_picker.as_ref(),
                         )
@@ -325,7 +340,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             &session,
                             &input,
                             &config,
-                            show_help,
+                            show_help.then_some(help_page),
                             show_settings.then_some(&settings),
                             #[cfg(feature = "chesscom")]
                             game_picker.as_ref(),
@@ -402,6 +417,12 @@ fn persist_and_apply(config: &mut Config, session: &mut EngineSession) {
     ));
 }
 
+fn help_status(page: usize) -> String {
+    let total = HELP_PAGES.len();
+    let title = HELP_PAGES[page].title;
+    format!("Help {title} ({}/{total}) — ←→ pages · Esc close", page + 1)
+}
+
 fn maybe_start_engine(session: &mut EngineSession, config: &Config) {
     if session.is_thinking() || !session.engine_should_auto_move() {
         return;
@@ -414,7 +435,7 @@ fn draw(
     session: &EngineSession,
     input: &MoveInput,
     config: &Config,
-    show_help: bool,
+    help_page: Option<usize>,
     settings_overlay: Option<&SettingsOverlay>,
     #[cfg(feature = "chesscom")] picker: Option<&game_picker::GamePicker>,
 ) {
@@ -487,21 +508,33 @@ fn draw(
         }
     }
 
-    if show_help {
-        let width = area.width.saturating_sub(2).min(72).max(28);
-        let height = area.height.saturating_sub(1).min(40).max(18);
+    if let Some(page) = help_page {
+        let page = page.min(HELP_PAGES.len().saturating_sub(1));
+        let help = &HELP_PAGES[page];
+        let width = area.width.saturating_sub(2).min(56).max(28);
+        let height = area.height.saturating_sub(1).min(22).max(12);
         let popup = Rect::new(
             area.x + (area.width.saturating_sub(width)) / 2,
             area.y + (area.height.saturating_sub(height)) / 2,
             width,
             height,
         );
+        let title = format!(
+            " Help · {} ({}/{}) ",
+            help.title,
+            page + 1,
+            HELP_PAGES.len()
+        );
+        let body = format!(
+            "{}\n  ←→ / h l   next page\n  Esc / ?    close",
+            help.body
+        );
         frame.render_widget(Clear, popup);
         frame.render_widget(
-            Paragraph::new(HELP_TEXT)
+            Paragraph::new(body)
                 .block(
                     Block::default()
-                        .title(" Help ")
+                        .title(title)
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Cyan)),
                 )

@@ -52,40 +52,19 @@ pub enum PromptKind {
     GameList,
 }
 
-pub const HELP_TEXT: &str = "\
-OpenChess TUI
+/// One page of the `?` help overlay.
+pub struct HelpPage {
+    pub title: &'static str,
+    pub body: &'static str,
+}
 
-  GAME
-    n new · u undo · t flip · i import · v eval bar · , settings · ? help · q quit
-
-  SETTINGS (press ,)
-    ↑↓ / j k     select field
-    ←→ / - +     adjust value
-    Enter / Space toggle or cycle
-    Esc / ,      close (saves on each change)
-    Advanced engine options: edit the JSON path shown in settings
-
-  IMPORT (press i, then Enter)
-    FEN, PGN text, .fen/.pgn file path
-    game URL          https://www.chess.com/game/live/…
-    username          hikaru  (browse games; needs --features chesscom)
-    user:NAME         user:gmdrj
-    member URL        https://www.chess.com/member/gmdrj
-
-  CHESS.COM GAME LIST (with --features chesscom)
-    ↑↓ / j k     move selection
-    m            show next 10 from session cache
-    r            refresh from chess.com (overwrite cache)
-    Enter        load selected game (resets board)
-    Esc          back to username entry
-
-  BROWSE (after importing a game)
-    Left / [     previous ply
-    Right / ]    next ply
-    Home         jump to start
-    End / $      jump to end
-    u            step back (while browsing)
-    eval bar     shown automatically while browsing; v toggles otherwise
+/// Help content split into short pages — navigate with ←→ / h l.
+pub const HELP_PAGES: &[HelpPage] = &[
+    HelpPage {
+        title: "Game",
+        body: "\
+  n new · u undo · t flip · i import
+  v eval bar · , settings · ? help · q quit
 
   MODES
     p   Player vs Player — you move both colors
@@ -97,28 +76,80 @@ OpenChess TUI
   ENGINE
     g   go / think now
     s   stop thinking
+",
+    },
+    HelpPage {
+        title: "Settings",
+        body: "\
+  Press , to open settings
 
-  HOW TO WRITE MOVES (one move + Enter)
-    Pawn     destination only:     e4  d5
-             capture:              exd5
-             promote:              e8=Q  (or e7e8q)
-    Knight   N + square:           Nf3  Na6
-             disambiguate:         Nbd2  N1c3
-             capture:              Nxe5
-    Bishop   B + square:           Bc4  Bb5
-             capture:              Bxe6
-    Rook     R + square:           Re1  Rh3
-             disambiguate:         Rad1  R1e2
-             capture:              Rxe4
-    Queen    Q + square:           Qh4  Qd2
-             capture:              Qxf7
-    King     K + square:           Ke2  Kf1
-             capture:              Kxe2
-    Castle   kingside / queenside: O-O  O-O-O
-    Or use UCI always:             e2e4  g1f3  e1g1
+    ↑↓ / j k     select field
+    ←→ / - +     adjust value
+    Enter / Space toggle or cycle
+    Esc / ,      close (saves on each change)
 
-    vs bot: enter YOUR move only — the bot replies
-";
+  Advanced engine options: edit the JSON path
+  shown in settings
+",
+    },
+    HelpPage {
+        title: "Import",
+        body: "\
+  Press i, paste or type, then Enter
+
+    FEN, PGN text, or .fen/.pgn file path
+    game URL     https://www.chess.com/game/live/…
+    username     hikaru  (browse; needs chesscom)
+    user:NAME    user:gmdrj
+    member URL   https://www.chess.com/member/gmdrj
+",
+    },
+    #[cfg(feature = "chesscom")]
+    HelpPage {
+        title: "chess.com list",
+        body: "\
+  After importing a username:
+
+    ↑↓ / j k     move selection
+    m            show next 10 from session cache
+    r            refresh from chess.com
+    Enter        load selected game
+    Esc          back to username entry
+",
+    },
+    HelpPage {
+        title: "Browse",
+        body: "\
+  After importing a game:
+
+    Left / [     previous ply
+    Right / ]    next ply
+    Home         jump to start
+    End / $      jump to end
+    u            step back (while browsing)
+
+  Eval bar shows automatically while browsing;
+  v toggles it otherwise
+",
+    },
+    HelpPage {
+        title: "Moves",
+        body: "\
+  One move + Enter (SAN or UCI)
+
+    Pawn     e4  d5  exd5  e8=Q
+    Knight   Nf3  Nbd2  Nxe5
+    Bishop   Bc4  Bxe6
+    Rook     Re1  Rad1  Rxe4
+    Queen    Qh4  Qxf7
+    King     Ke2  Kxe2
+    Castle   O-O  O-O-O
+    UCI      e2e4  g1f3  e1g1
+
+  vs bot: enter YOUR move only — the bot replies
+",
+    },
+];
 
 #[derive(Debug, Default)]
 pub struct MoveInput {

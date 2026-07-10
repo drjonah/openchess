@@ -5,6 +5,7 @@
 //! Downloaded lists are written to `~/.cache/openchess/chesscom/{user}.json`.
 
 mod cache;
+pub mod cli;
 mod client;
 mod fetch;
 mod url;

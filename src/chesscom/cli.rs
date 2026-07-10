@@ -1,20 +1,20 @@
-//! Fetch a chess.com game PGN by URL or username.
+//! CLI for fetching chess.com PGNs: `openchess chesscom <url|username>`.
 //!
 //! ```text
-//! cargo run --features chesscom --bin openchess-chesscom -- <url|username> [--list] [--index N]
+//! cargo run -- chesscom <url|username> [--list] [--index N]
 //! ```
 
-use openchess::chesscom::{
+use super::{
     fetch_latest_pgn, fetch_pgn_by_index, fetch_pgn_from_url, list_recent_games, looks_like_game_url,
 };
-use std::env;
 use std::process::ExitCode;
 
-fn main() -> ExitCode {
-    let mut args: Vec<String> = env::args().skip(1).collect();
+/// Run the chess.com CLI with arguments after the `chesscom` subcommand.
+pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
+    let mut args: Vec<String> = args.into_iter().collect();
     if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
         eprintln!(
-            "usage: openchess-chesscom <game-url|username> [--list] [--index N]\n\n\
+            "usage: openchess chesscom <game-url|username> [--list] [--index N]\n\n\
              Prints PGN to stdout. Use --list to print recent games from the\n\
              latest archive month (newest first). --index N selects the Nth\n\
              game (0 = newest) instead of the latest."

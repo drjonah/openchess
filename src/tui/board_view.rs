@@ -1,130 +1,74 @@
-//! Unicode chessboard widget — squares and piece sprites scale to the panel.
+//! Chessboard widget — wooden squares and Unicode / block-drawing pieces.
 
+use super::piece_art::{self, PieceSize};
 use super::session::EngineSession;
-use crate::types::{Color as Side, Piece, PieceType, Square};
+use crate::types::{Color as Side, Piece, Square};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-/// 7×7 silhouettes — shapes chosen to stay distinct when scaled.
-const SPRITE_W: usize = 7;
-const SPRITE_H: usize = 7;
-
-fn sprite(pt: PieceType) -> [[u8; SPRITE_W]; SPRITE_H] {
-    match pt {
-        // Cross crown + wide base
-        PieceType::King => [
-            [0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-        ],
-        // Spiky 5-point crown (unique vs rook/king)
-        PieceType::Queen => [
-            [1, 0, 1, 0, 1, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1],
-            [0, 1, 1, 1, 1, 1, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [1, 1, 1, 1, 1, 1, 1],
-        ],
-        // Battlement top — rectangular tower
-        PieceType::Rook => [
-            [1, 0, 1, 0, 1, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1],
-            [0, 1, 1, 1, 1, 1, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [1, 1, 1, 1, 1, 1, 1],
-        ],
-        // Mitre with diagonal cut (slash) — tall & pointed
-        PieceType::Bishop => [
-            [0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 1, 0, 1, 0, 0],
-            [0, 0, 1, 1, 0, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [1, 1, 1, 1, 1, 1, 1],
-        ],
-        // Horse head facing right — L / snout profile
-        PieceType::Knight => [
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-            [1, 1, 1, 1, 0, 1, 0],
-            [0, 1, 1, 1, 0, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-        ],
-        // Smallest: ball + thin stem + pedestal
-        PieceType::Pawn => [
-            [0, 0, 0, 0, 0, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 0, 1, 1, 1, 0, 0],
-            [0, 1, 1, 1, 1, 1, 0],
-        ],
-    }
-}
-
-fn sample_sprite(pt: PieceType, row: u16, col: u16, cell_h: u16, cell_w: u16) -> bool {
-    let bitmap = sprite(pt);
-    // Map cell coords into sprite with a 1-cell margin when the square is large.
-    let margin_y = if cell_h >= 5 { 1 } else { 0 };
-    let margin_x = if cell_w >= 5 { 1 } else { 0 };
-    let inner_h = cell_h.saturating_sub(margin_y * 2).max(1);
-    let inner_w = cell_w.saturating_sub(margin_x * 2).max(1);
-
-    if row < margin_y || col < margin_x {
-        return false;
-    }
-    let ry = row - margin_y;
-    let cx = col - margin_x;
-    if ry >= inner_h || cx >= inner_w {
-        return false;
-    }
-
-    let sy = (ry as usize * SPRITE_H) / inner_h as usize;
-    let sx = (cx as usize * SPRITE_W) / inner_w as usize;
-    bitmap[sy.min(SPRITE_H - 1)][sx.min(SPRITE_W - 1)] != 0
-}
+// Classic palette adapted from chess-tui (MIT).
+const BOARD_LIGHT: Color = Color::Rgb(240, 217, 181);
+const BOARD_DARK: Color = Color::Rgb(181, 136, 99);
+const PIECE_WHITE: Color = Color::Rgb(255, 255, 255);
+const PIECE_BLACK: Color = Color::Rgb(20, 20, 20);
+const LAST_MOVE: Color = Color::Rgb(100, 200, 100);
+const BEST_MOVE: Color = Color::Rgb(100, 160, 220);
 
 fn piece_fg(piece: Piece) -> Color {
     match piece.color() {
-        // Warm ivory vs cool charcoal so sides stay readable on both squares.
-        Some(Side::White) => Color::Rgb(250, 245, 230),
-        Some(Side::Black) => Color::Rgb(25, 28, 35),
+        Some(Side::White) => PIECE_WHITE,
+        Some(Side::Black) => PIECE_BLACK,
         None => Color::White,
     }
 }
 
 fn square_bg(session: &EngineSession, sq: Square, file: u8, rank: u8) -> Color {
     let light = (file + rank) % 2 == 1;
-    let mut bg = if light {
-        Color::Rgb(110, 110, 110)
-    } else {
-        Color::Rgb(55, 55, 55)
-    };
+    let mut bg = if light { BOARD_LIGHT } else { BOARD_DARK };
     if let Some(mv) = session.last_move() {
         if sq == mv.from() || sq == mv.to() {
-            bg = Color::Rgb(150, 125, 50);
+            bg = LAST_MOVE;
         }
     }
     if let Some(best) = session.info().bestmove.as_deref() {
         if let Ok(bm) = super::session::resolve_player_move(session.board(), best) {
             if sq == bm.from() || sq == bm.to() {
-                bg = Color::Rgb(50, 110, 140);
+                bg = BEST_MOVE;
             }
         }
     }
     bg
+}
+
+fn cell_content(
+    piece: Piece,
+    row_in_cell: u16,
+    cell_h: u16,
+    cell_w: u16,
+    mid_col: u16,
+) -> String {
+    if piece.is_empty() {
+        if row_in_cell == cell_h / 2 && cell_h == 1 {
+            let mut s = String::with_capacity(cell_w as usize);
+            for col in 0..cell_w {
+                s.push(if col == mid_col { '·' } else { ' ' });
+            }
+            return s;
+        }
+        return " ".repeat(cell_w as usize);
+    }
+
+    let Some(pt) = piece.piece_type() else {
+        return " ".repeat(cell_w as usize);
+    };
+    let Some(side) = piece.color() else {
+        return " ".repeat(cell_w as usize);
+    };
+
+    let size = PieceSize::from_cell_height(cell_h);
+    let art = piece_art::piece_art(pt, side, size);
+    let lines = piece_art::art_lines(art);
+    piece_art::line_for_row(&lines, row_in_cell, cell_h, cell_w)
 }
 
 pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
@@ -186,27 +130,7 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
                 let sq = Square::from_file_rank(file, rank).unwrap();
                 let piece = session.piece_on(sq);
                 let bg = square_bg(session, sq, file, rank);
-
-                let mut cell = String::with_capacity(cell_w as usize);
-                for col in 0..cell_w {
-                    let ch = if piece.is_empty() {
-                        if row_in_cell == cell_h / 2 && col == mid_col && cell_h == 1 {
-                            '·'
-                        } else {
-                            ' '
-                        }
-                    } else if let Some(pt) = piece.piece_type() {
-                        if sample_sprite(pt, row_in_cell, col, cell_h, cell_w) {
-                            '█'
-                        } else {
-                            ' '
-                        }
-                    } else {
-                        ' '
-                    };
-                    cell.push(ch);
-                }
-
+                let cell = cell_content(piece, row_in_cell, cell_h, cell_w, mid_col);
                 let style = Style::default().bg(bg).fg(piece_fg(piece));
                 spans.push(Span::styled(cell, style));
             }
