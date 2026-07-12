@@ -1,0 +1,1 @@
+LICHESS_TOKEN=""
