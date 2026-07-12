@@ -1,0 +1,1 @@
+{"type":"gameFull","id":"testgame","initialFen":"startpos","white":{"id":"openchessbot","name":"OpenChessBot"},"black":{"id":"opp","name":"opp"},"state":{"type":"gameState","moves":"","wtime":300000,"btime":300000,"winc":3000,"binc":3000,"status":"started"},"speed":"blitz"}

@@ -75,6 +75,18 @@ pub struct Opponent {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Challenger {
     pub name: String,
+    /// Player title (`"BOT"`, `"GM"`, …) when set.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub rating: Option<u32>,
+}
+
+impl Challenger {
+    /// True when the challenger is a bot account.
+    pub fn is_bot(&self) -> bool {
+        self.title.as_deref() == Some("BOT")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
