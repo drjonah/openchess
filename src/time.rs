@@ -10,8 +10,8 @@ use std::time::Duration;
 /// Default Move Overhead in milliseconds.
 ///
 /// Matches [`crate::config::EngineConfig`] (`50`), not Stockfish's typical `10`.
-/// Prefer the project config default so UCI and TUI stay consistent until a
-/// `Move Overhead` UCI option lands (P7-03).
+/// Prefer the project config default so UCI and TUI stay consistent; UCI also
+/// exposes a `Move Overhead` option (P7-03).
 pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 
 /// Default Move Overhead as a [`Duration`].

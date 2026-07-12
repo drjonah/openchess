@@ -1,7 +1,7 @@
 //! Search entry: iterative deepening, aspiration, PVS (P2).
 
 mod alphabeta;
-mod selectivity;
+pub mod selectivity;
 pub mod stack;
 
 use alphabeta::{search, NodeType};
@@ -77,6 +77,10 @@ pub struct ThreadData {
     pub start: Instant,
     /// Hard elapsed-time abort bound, if any.
     pub hard_limit: Option<Duration>,
+    /// Debug counters for singular / negative extensions (P5-06).
+    pub singular_extensions: u64,
+    pub negative_extensions: u64,
+    pub multi_cuts: u64,
 }
 
 impl ThreadData {
@@ -88,6 +92,9 @@ impl ThreadData {
             history: HistoryTables::new(),
             start: Instant::now(),
             hard_limit: None,
+            singular_extensions: 0,
+            negative_extensions: 0,
+            multi_cuts: 0,
         }
     }
 }
@@ -98,8 +105,8 @@ impl Default for ThreadData {
     }
 }
 
-/// Optional info callback: (depth, score, nodes, time, pv_string).
-pub type InfoCallback<'a> = dyn FnMut(i32, Value, u64, Duration, &str) + 'a;
+/// Optional info callback: (depth, score, nodes, time, pv_string, hashfull).
+pub type InfoCallback<'a> = dyn FnMut(i32, Value, u64, Duration, &str, u32) + 'a;
 
 /// Run iterative deepening search on `board`.
 ///
@@ -118,6 +125,18 @@ pub fn go(
     let budget = TimeBudget::from_limits(&limits, board.side_to_move(), limits.move_overhead);
     td.start = start;
     td.hard_limit = budget.map(|b| b.hard);
+
+    // Root already drawn by rule (threefold / 50-move / insufficient material).
+    if board.is_draw(0) {
+        return SearchResult {
+            best_move: Move::NONE,
+            score: crate::types::score::VALUE_DRAW,
+            depth: 0,
+            nodes: 0,
+            pv: Vec::new(),
+            time: start.elapsed(),
+        };
+    }
 
     // Root move list.
     let legal = board.legal_moves();
@@ -197,6 +216,7 @@ pub fn go(
                 alpha,
                 beta,
                 NodeType::Root,
+                Move::NONE,
             );
 
             if stop.load(Ordering::Relaxed) {
@@ -243,7 +263,14 @@ pub fn go(
 
         if let Some(cb) = info.as_mut() {
             let pv_str = format_pv(&pv);
-            cb(depth, score, td.nodes, start.elapsed(), &pv_str);
+            cb(
+                depth,
+                score,
+                td.nodes,
+                start.elapsed(),
+                &pv_str,
+                tt.hashfull(),
+            );
         }
 
         // Soft stop between completed iterations (do not set stop).
@@ -280,7 +307,8 @@ mod tests {
     use super::*;
     use crate::lookup;
     use super::selectivity;
-    use crate::types::{Color, Piece, Square};
+    use crate::types::score::VALUE_INFINITE;
+    use crate::types::{Color, Move, Piece, Square};
     use std::str::FromStr;
     use std::sync::atomic::Ordering;
 
@@ -472,6 +500,200 @@ mod tests {
         );
         assert!(!on.best_move.is_none());
         assert!(board_on.legal_moves().contains(&on.best_move));
+    }
+
+    #[test]
+    fn rfp_razoring_reduce_nodes_at_fixed_depth() {
+        init();
+        let _rfp = selectivity::RFP_TEST_LOCK.lock().unwrap();
+        let _razor = selectivity::RAZORING_TEST_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+
+        selectivity::RFP_ENABLED.store(false, Ordering::Relaxed);
+        selectivity::RAZORING_ENABLED.store(false, Ordering::Relaxed);
+        let mut board_off = Board::startpos();
+        let mut tt_off = TranspositionTable::new(16);
+        let off = go(
+            &mut board_off,
+            Limits {
+                depth: Some(7),
+                ..Default::default()
+            },
+            &mut tt_off,
+            &stop,
+            None,
+        );
+
+        selectivity::RFP_ENABLED.store(true, Ordering::Relaxed);
+        selectivity::RAZORING_ENABLED.store(true, Ordering::Relaxed);
+        let mut board_on = Board::startpos();
+        let mut tt_on = TranspositionTable::new(16);
+        let on = go(
+            &mut board_on,
+            Limits {
+                depth: Some(7),
+                ..Default::default()
+            },
+            &mut tt_on,
+            &stop,
+            None,
+        );
+
+        assert!(
+            on.nodes <= off.nodes,
+            "RFP+razoring should not increase nodes: on={} off={}",
+            on.nodes,
+            off.nodes
+        );
+        assert!(!on.best_move.is_none());
+        assert!(board_on.legal_moves().contains(&on.best_move));
+    }
+
+    #[test]
+    fn move_loop_pruning_reduces_nodes_at_fixed_depth() {
+        init();
+        let _lmp = selectivity::LMP_TEST_LOCK.lock().unwrap();
+        let _fut = selectivity::FUTILITY_TEST_LOCK.lock().unwrap();
+        let _hist = selectivity::HISTORY_PRUNE_TEST_LOCK.lock().unwrap();
+        let _see = selectivity::SEE_PRUNE_TEST_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+
+        selectivity::LMP_ENABLED.store(false, Ordering::Relaxed);
+        selectivity::FUTILITY_ENABLED.store(false, Ordering::Relaxed);
+        selectivity::HISTORY_PRUNE_ENABLED.store(false, Ordering::Relaxed);
+        selectivity::SEE_PRUNE_ENABLED.store(false, Ordering::Relaxed);
+        let mut board_off = Board::startpos();
+        let mut tt_off = TranspositionTable::new(16);
+        let off = go(
+            &mut board_off,
+            Limits {
+                depth: Some(7),
+                ..Default::default()
+            },
+            &mut tt_off,
+            &stop,
+            None,
+        );
+
+        selectivity::LMP_ENABLED.store(true, Ordering::Relaxed);
+        selectivity::FUTILITY_ENABLED.store(true, Ordering::Relaxed);
+        selectivity::HISTORY_PRUNE_ENABLED.store(true, Ordering::Relaxed);
+        selectivity::SEE_PRUNE_ENABLED.store(true, Ordering::Relaxed);
+        let mut board_on = Board::startpos();
+        let mut tt_on = TranspositionTable::new(16);
+        let on = go(
+            &mut board_on,
+            Limits {
+                depth: Some(7),
+                ..Default::default()
+            },
+            &mut tt_on,
+            &stop,
+            None,
+        );
+
+        assert!(
+            on.nodes <= off.nodes,
+            "move-loop pruning should not increase nodes: on={} off={}",
+            on.nodes,
+            off.nodes
+        );
+        assert!(!on.best_move.is_none());
+        assert!(board_on.legal_moves().contains(&on.best_move));
+    }
+
+    #[test]
+    fn probcut_iir_reduce_nodes_at_fixed_depth() {
+        init();
+        let _pc = selectivity::PROBCUT_TEST_LOCK.lock().unwrap();
+        let _iir = selectivity::IIR_TEST_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+
+        selectivity::PROBCUT_ENABLED.store(false, Ordering::Relaxed);
+        selectivity::IIR_ENABLED.store(false, Ordering::Relaxed);
+        let mut board_off = Board::startpos();
+        let mut tt_off = TranspositionTable::new(16);
+        let off = go(
+            &mut board_off,
+            Limits {
+                depth: Some(8),
+                ..Default::default()
+            },
+            &mut tt_off,
+            &stop,
+            None,
+        );
+
+        selectivity::PROBCUT_ENABLED.store(true, Ordering::Relaxed);
+        selectivity::IIR_ENABLED.store(true, Ordering::Relaxed);
+        let mut board_on = Board::startpos();
+        let mut tt_on = TranspositionTable::new(16);
+        let on = go(
+            &mut board_on,
+            Limits {
+                depth: Some(8),
+                ..Default::default()
+            },
+            &mut tt_on,
+            &stop,
+            None,
+        );
+
+        assert!(
+            on.nodes <= off.nodes,
+            "ProbCut+IIR should not increase nodes: on={} off={}",
+            on.nodes,
+            off.nodes
+        );
+        assert!(!on.best_move.is_none());
+        assert!(board_on.legal_moves().contains(&on.best_move));
+    }
+
+    #[test]
+    fn singular_extensions_visible_in_deep_search() {
+        init();
+        let _guard = selectivity::SINGULAR_TEST_LOCK.lock().unwrap();
+        selectivity::SINGULAR_ENABLED.store(true, Ordering::Relaxed);
+        let mut board = Board::startpos();
+        let mut tt = TranspositionTable::new(16);
+        let stop = AtomicBool::new(false);
+
+        // Iterative deepening via go warms the TT.
+        let _ = go(
+            &mut board,
+            Limits {
+                depth: Some(10),
+                ..Default::default()
+            },
+            &mut tt,
+            &stop,
+            None,
+        );
+
+        // Direct deep search accumulates extension counters on td.
+        let mut board2 = Board::startpos();
+        let mut td = ThreadData::new();
+        let _ = search(
+            &mut board2,
+            &mut td,
+            &mut tt,
+            &stop,
+            0,
+            10,
+            -VALUE_INFINITE,
+            VALUE_INFINITE,
+            NodeType::Root,
+            Move::NONE,
+        );
+        let total = td.singular_extensions + td.negative_extensions + td.multi_cuts;
+        // At depth 10 from startpos, singular logic should fire at least once.
+        assert!(
+            total > 0,
+            "expected singular/negative/multi-cut activity, got se={} neg={} mc={}",
+            td.singular_extensions,
+            td.negative_extensions,
+            td.multi_cuts
+        );
     }
 
     #[test]

@@ -196,7 +196,7 @@ impl HistoryTables {
         }
     }
 
-    /// Combined history signal for LMR / history pruning (not wired into LMR yet).
+    /// Combined history signal for LMR / history pruning.
     ///
     /// Quiet: `2 * butterfly + cont(1) + cont(2)`. Capture: capture history only.
     #[inline]

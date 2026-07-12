@@ -26,6 +26,8 @@ const MAX_QUIETS_TRACKED: usize = 64;
 const MAX_CAPTURES_TRACKED: usize = 32;
 
 /// Fail-soft alpha-beta / PVS search.
+///
+/// `excluded` is set during singular verification to skip the TT move.
 pub fn search(
     board: &mut Board,
     td: &mut ThreadData,
@@ -36,16 +38,24 @@ pub fn search(
     mut alpha: Value,
     beta: Value,
     node: NodeType,
+    excluded: Move,
 ) -> Value {
     let is_root = node == NodeType::Root;
     let is_pv = node != NodeType::NonPv;
     let in_check = board.in_check();
+    let singular_node = !excluded.is_none();
 
     td.nodes += 1;
 
     // Abort check (skip at root so we always finish a move if possible).
     if !is_root && (stop.load(Ordering::Relaxed) || ply >= MAX_PLY - 1) {
         return eval::evaluate(board);
+    }
+
+    // Draw by repetition / 50-move (Stockfish-style: twofold inside the tree).
+    // Skip at root so we still return a move when the game is ongoing.
+    if !is_root && board.is_draw(ply) {
+        return VALUE_DRAW;
     }
 
     // Mate distance pruning.
@@ -73,14 +83,18 @@ pub fn search(
 
     let key = board.key();
 
-    // TT probe.
+    // TT probe (skip cutoffs when verifying singularity).
     let mut tt_move = Move::NONE;
     let mut tt_hit = false;
+    let mut tt_value = -VALUE_INFINITE;
+    let mut tt_depth = -1i32;
     if let Some(entry) = tt.probe(key) {
         tt_hit = true;
         tt_move = entry.mv;
-        if !is_pv && entry.depth as i32 >= depth {
-            let score = value_from_tt(entry.score, ply as i32);
+        tt_value = value_from_tt(entry.score, ply as i32);
+        tt_depth = entry.depth as i32;
+        if !singular_node && !is_pv && entry.depth as i32 >= depth {
+            let score = tt_value;
             match entry.bound {
                 Bound::Exact => return score,
                 Bound::Lower if score >= beta => return score,
@@ -105,8 +119,17 @@ pub fn search(
     };
     let improving = ply >= 2 && selectivity::is_improving(static_eval, prev_eval, in_check);
 
-    // P5 forward pruning: NMP (live) + static hooks (RFP later).
-    if node == NodeType::NonPv && !in_check {
+    // P5 forward pruning: RFP → razoring → NMP → ProbCut (NonPV, not in check).
+    // Skip when verifying a singular move.
+    if !singular_node && node == NodeType::NonPv && !in_check {
+        if let Some(score) = selectivity::try_rfp(depth, beta, static_eval, improving) {
+            return score;
+        }
+        if let Some(score) = selectivity::try_razoring(
+            board, td, tt, stop, ply, depth, alpha, beta, static_eval,
+        ) {
+            return score;
+        }
         if let Some(score) = selectivity::try_null_move(
             board,
             td,
@@ -120,10 +143,54 @@ pub fn search(
         ) {
             return score;
         }
-        if let Some(score) =
-            selectivity::forward_prune(board, depth, alpha, beta, static_eval, improving)
-        {
+        if let Some(score) = selectivity::try_probcut(
+            board,
+            td,
+            tt,
+            stop,
+            ply,
+            depth,
+            beta,
+            static_eval,
+            tt_move,
+        ) {
             return score;
+        }
+    }
+
+    // IIR: reduce depth when no TT move on NonPV nodes.
+    let depth = selectivity::apply_iir(depth, tt_hit, is_pv);
+
+    // Singular extension / multi-cut / negative extension (P5-06).
+    let mut tt_extension = 0i32;
+    if !singular_node {
+        match selectivity::try_singular(
+            board,
+            td,
+            tt,
+            stop,
+            ply,
+            depth,
+            beta,
+            tt_move,
+            tt_value,
+            tt_depth,
+            in_check,
+            is_pv,
+        ) {
+            selectivity::SingularResult::Extend(ext) => {
+                tt_extension = ext;
+                td.singular_extensions += 1;
+            }
+            selectivity::SingularResult::Negative => {
+                tt_extension = -1;
+                td.negative_extensions += 1;
+            }
+            selectivity::SingularResult::MultiCut(score) => {
+                td.multi_cuts += 1;
+                return score;
+            }
+            selectivity::SingularResult::None => {}
         }
     }
 
@@ -156,7 +223,19 @@ pub fn search(
     let mut captures_searched = [Move::NONE; MAX_CAPTURES_TRACKED];
     let mut capture_count = 0usize;
 
+    // Continuation slots for history reads in the move loop.
+    let mut stack_cont_hist = [ContSlot::NONE; MAX_PLY];
+    for (i, s) in td.stack.iter().enumerate().take(MAX_PLY) {
+        stack_cont_hist[i] = s.cont_slot;
+    }
+    let cont_for_hist = crate::history::continuation_slots(&stack_cont_hist, ply);
+
     while let Some(mv) = picker.next() {
+        // Skip excluded move during singular verification.
+        if mv == excluded {
+            continue;
+        }
+
         // Root hard-abort poll: stop between root moves once the hard bound is hit.
         if is_root {
             if let Some(hard) = td.hard_limit {
@@ -174,8 +253,23 @@ pub fn search(
         td.stack[ply].current_move = mv;
 
         let quiet = is_quiet(board, mv);
+        let hist_score = td.history.stat_score(stm, board, mv, quiet, &cont_for_hist);
+        let see_score = if quiet { 0 } else { board.see(mv) };
 
-        if selectivity::should_prune_move(move_count, depth, quiet) {
+        if !singular_node
+            && selectivity::should_prune_move(selectivity::MovePruneCtx {
+                move_count,
+                depth,
+                quiet,
+                is_pv,
+                in_check,
+                improving,
+                static_eval,
+                alpha,
+                hist_score,
+                see_score,
+            })
+        {
             continue;
         }
 
@@ -186,17 +280,22 @@ pub fn search(
 
         let mut score: Value;
         let gives_check = board.in_check();
-        let new_depth = depth - 1 + if gives_check { 0 } else { 0 }; // extension hook later
+        let extension = if mv == tt_move { tt_extension } else { 0 };
+        let new_depth = (depth - 1 + extension).max(0);
 
         let reduction = if move_count > 1 && depth >= 3 {
-            selectivity::late_move_reduction(
+            let mut r = selectivity::late_move_reduction(
                 depth,
                 move_count,
                 quiet,
                 improving,
                 in_check,
                 gives_check,
-            )
+            );
+            if quiet {
+                r = (r + selectivity::lmr_history_adjustment(hist_score)).max(0);
+            }
+            r.min(new_depth).max(0)
         } else {
             0
         };
@@ -214,6 +313,7 @@ pub fn search(
                 -beta,
                 -alpha,
                 child,
+                Move::NONE,
             );
         } else {
             // PVS: null-window scout, then re-search on fail-high.
@@ -228,6 +328,7 @@ pub fn search(
                 -(alpha + 1),
                 -alpha,
                 NodeType::NonPv,
+                Move::NONE,
             );
             if score > alpha && (reduction > 0 || is_pv) {
                 let child = if is_pv { NodeType::Pv } else { NodeType::NonPv };
@@ -241,6 +342,7 @@ pub fn search(
                     -beta,
                     -alpha,
                     child,
+                    Move::NONE,
                 );
             }
         }
@@ -304,6 +406,10 @@ pub fn search(
 
     // Terminal node: checkmate or stalemate.
     if move_count == 0 {
+        // Singular verification with no legal alternatives → fail low.
+        if singular_node {
+            return alpha;
+        }
         return if in_check {
             mated_in(ply as i32)
         } else {
@@ -311,22 +417,23 @@ pub fn search(
         };
     }
 
-    // TT store.
-    let bound = if best_score >= beta {
-        Bound::Lower
-    } else if best_score > old_alpha {
-        Bound::Exact
-    } else {
-        Bound::Upper
-    };
-    let _ = tt_hit; // reserved for IIR (P5)
-    tt.store(
-        key,
-        best_move,
-        value_to_tt(best_score, ply as i32),
-        depth as i16,
-        bound,
-    );
+    // TT store (skip during singular verification).
+    if !singular_node {
+        let bound = if best_score >= beta {
+            Bound::Lower
+        } else if best_score > old_alpha {
+            Bound::Exact
+        } else {
+            Bound::Upper
+        };
+        tt.store(
+            key,
+            best_move,
+            value_to_tt(best_score, ply as i32),
+            depth as i16,
+            bound,
+        );
+    }
 
     best_score
 }

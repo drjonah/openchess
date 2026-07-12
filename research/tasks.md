@@ -354,33 +354,37 @@ flowchart TB
   - **Research:** chesswiki LMR · stockfish move loop  
   - **Note:** log×log table; quiet-only; `LMR_ENABLED` A/B toggle; PVS re-search already wired.
 
-- [ ] **P5-03** — Reverse futility (RFP) + razoring  
+- [x] **P5-03** — Reverse futility (RFP) + razoring  
   - **Deps:** P5-01  
   - **Parallel-ok:** P5-02 (prefer sequential if same agent)  
   - **Deliverable:** RFP fail-high on high eval at low depth; razoring drop to qsearch when very low  
   - **Acceptance:** NonPV-only (or documented); no RFP when in check  
-  - **Research:** reckless §6.3 · stockfish steps ~7–9
+  - **Research:** reckless §6.3 · stockfish steps ~7–9  
+  - **Note:** `try_rfp` / `try_razoring` with `RFP_ENABLED` / `RAZORING_ENABLED` toggles.
 
-- [ ] **P5-04** — LMP + futility + history/SEE move-loop pruning  
+- [x] **P5-04** — LMP + futility + history/SEE move-loop pruning  
   - **Deps:** P5-02, P3-03, P1-08  
   - **Parallel-ok:** P6-04  
   - **Deliverable:** Skip late quiets (LMP); futility near leaves; history prune; SEE prune losing captures  
   - **Acceptance:** Each sub-flag can toggle; smoke tests pass with all on  
-  - **Research:** chesswiki LMP/futility/SEE · reckless move loop
+  - **Research:** chesswiki LMP/futility/SEE · reckless move loop  
+  - **Note:** `MovePruneCtx` + per-technique toggles; `stat_score` wired into LMR.
 
-- [ ] **P5-05** — ProbCut + IIR  
+- [x] **P5-05** — ProbCut + IIR  
   - **Deps:** P5-04, P3-02  
   - **Parallel-ok:** P6-05  
   - **Deliverable:** ProbCut shallow capture proof; IIR when no TT move  
   - **Acceptance:** Triggers on fixtures; no search explosion; TT miss path reduces as designed  
-  - **Research:** stockfish ProbCut / IIR · reckless catalog
+  - **Research:** stockfish ProbCut / IIR · reckless catalog  
+  - **Note:** `try_probcut` + `apply_iir`; NonPV-only IIR depth−1 when no TT hit.
 
-- [ ] **P5-06** — Singular extensions + multi-cut + negative extensions  
+- [x] **P5-06** — Singular extensions + multi-cut + negative extensions  
   - **Deps:** P5-05, P4-02  
   - **Parallel-ok:** P6-06, P8-03 harness  
   - **Deliverable:** TT move singular → extend; multi-cut prune; negative reduce when non-singular  
   - **Acceptance:** Extension counts visible in debug; no illegal depths; fixed-node smoke stable  
-  - **Research:** reckless singular/multi-cut · stockfish step ~15
+  - **Research:** reckless singular/multi-cut · stockfish step ~15  
+  - **Note:** `excluded` move on `search`; `try_singular`; counters on `ThreadData`.
 
 ---
 
@@ -467,12 +471,13 @@ flowchart TB
   - **Research:** chesswiki Time management · stockfish timeman · reckless soft/hard  
   - **Note:** `time::TimeBudget`; soft between ID depths; hard sets stop; overhead default 50ms.
 
-- [ ] **P7-03** — UCI options + debug helpers  
+- [x] **P7-03** — UCI options + debug helpers  
   - **Deps:** P7-01, P4-02  
   - **Parallel-ok:** P6-06, P8-01  
   - **Deliverable:** `Hash`, `Threads` (stub until P8), `Move Overhead`; `bench` / `perft` / `eval` / `d`  
   - **Acceptance:** `setoption name Hash value 64` resizes TT; `bench` prints nodes  
-  - **Research:** reckless UCI options table · stockfish §15
+  - **Research:** reckless UCI options table · stockfish §15  
+  - **Note:** `Threads` stub (max 1); `Move Overhead` session option; `hashfull` in info.
 
 - [ ] **P7-04** — Adaptive TM (stability)  
   - **Deps:** P7-02, P2-05  
@@ -583,12 +588,13 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P8-00** — Correctness harness (day one)  
+- [x] **P8-00** — Correctness harness (day one)  
   - **Deps:** none (grows with P1/P2)  
   - **Parallel-ok:** everyone  
   - **Deliverable:** Scripts/CI targets for perft + bench signature + UCI smoke  
   - **Acceptance:** One command runs perft gates; fails CI on mismatch  
-  - **Research:** chesswiki Engine Testing · stockfish tests/
+  - **Research:** chesswiki Engine Testing · stockfish tests/  
+  - **Note:** `tools/bench.rs` + `scripts/ci.sh` + `.github/workflows/ci.yml`; `BENCH_NODE_SIGNATURE` gate.
 
 - [ ] **P8-01** — Lazy SMP  
   - **Deps:** P2-06, P4-02, P3-03, P7-03  

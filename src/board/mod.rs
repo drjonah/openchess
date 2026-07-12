@@ -1,5 +1,6 @@
 //! Board position: dual bitboard + mailbox representation.
 
+mod draw;
 mod makemove;
 mod movegen;
 mod parser;
@@ -11,6 +12,7 @@ use crate::types::{
 };
 use std::fmt;
 
+pub use draw::GameResult;
 pub use makemove::{BoardObserver, StateInfo};
 pub use parser::{FenError, ParseMoveError};
 

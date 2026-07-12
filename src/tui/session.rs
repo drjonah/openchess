@@ -4,7 +4,7 @@
 
 use super::game::{AnalyzedGame, GameHeaders, PlyRecord};
 use super::san::format_san;
-use crate::board::Board;
+use crate::board::{Board, GameResult};
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
 use crate::types::{Color, Move, Piece, PieceType, Square, Value};
@@ -310,12 +310,24 @@ impl EngineSession {
     }
 
     pub fn engine_should_auto_move(&self) -> bool {
+        if self.is_game_over() {
+            return false;
+        }
         match self.mode {
             None => false,
             Some(PlayMode::PlayerVsPlayer | PlayMode::Analyze) => false,
             Some(PlayMode::PlayerVsBot { human }) => self.board.side_to_move() != human,
             Some(PlayMode::BotVsBot) => true,
         }
+    }
+
+    /// Current game result (mate, draw-by-rule, or ongoing).
+    pub fn game_result(&self) -> GameResult {
+        self.board.game_result()
+    }
+
+    pub fn is_game_over(&self) -> bool {
+        self.game_result().is_over()
     }
 
     pub fn search_applies_move(&self) -> bool {
@@ -601,6 +613,9 @@ impl EngineSession {
     }
 
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
+        if self.is_game_over() {
+            return Err(self.game_result().status_message().into());
+        }
         self.ensure_analyzed();
         let san = format_san(&self.board, mv);
         if let Some(game) = self.analyzed.as_mut() {
@@ -616,7 +631,12 @@ impl EngineSession {
         self.last_move = Some(mv);
         self.stop_eval_quiet();
         self.live_eval_stale = true;
-        self.status = format!("Played {mv}");
+        let result = self.board.game_result();
+        self.status = if result.is_over() {
+            result.status_message().into()
+        } else {
+            format!("Played {mv}")
+        };
         Ok(())
     }
 
@@ -679,7 +699,7 @@ impl EngineSession {
             let mut board = board;
             let mut tt = TranspositionTable::new(16);
             let mut on_info =
-                |depth: i32, score: Value, nodes: u64, time: Duration, pv: &str| {
+                |depth: i32, score: Value, nodes: u64, time: Duration, pv: &str, _hashfull: u32| {
                     if let Ok(mut snap) = live_info_t.lock() {
                         snap.depth = depth.max(0) as u32;
                         snap.score_cp = score;
@@ -711,6 +731,11 @@ impl EngineSession {
     fn start_bot_search(&mut self, limits: GoLimits) {
         if self.info.thinking {
             self.status = "Already thinking".into();
+            return;
+        }
+        let result = self.board.game_result();
+        if result.is_over() {
+            self.status = result.status_message().into();
             return;
         }
         self.apply_on_finish = self.search_applies_move();
@@ -891,7 +916,12 @@ impl EngineSession {
 
         if result.best_move.is_none() {
             self.live_eval_stale = false;
-            self.status = "No legal moves".into();
+            let ended = self.board.game_result();
+            self.status = if ended.is_over() {
+                ended.status_message().into()
+            } else {
+                "No legal moves".into()
+            };
             return;
         }
 
@@ -901,12 +931,14 @@ impl EngineSession {
             self.info.bestmove = None;
             match self.play_move(mv) {
                 Ok(()) => {
-                    // play_move marks live_eval_stale for a post-move refresh.
-                    self.status = if stopped {
-                        format!("Stopped → played {mv}")
-                    } else {
-                        format!("Bot plays {mv}")
-                    };
+                    // play_move already sets draw/mate status when the game ended.
+                    if !self.is_game_over() {
+                        self.status = if stopped {
+                            format!("Stopped → played {mv}")
+                        } else {
+                            format!("Bot plays {mv}")
+                        };
+                    }
                 }
                 Err(e) => {
                     self.live_eval_stale = false;
@@ -1333,6 +1365,24 @@ mod tests {
         s.play_text("e4").unwrap();
         assert!(s.engine_should_auto_move());
         assert!(!s.is_human_turn());
+    }
+
+    #[test]
+    fn threefold_repetition_ends_game_and_stops_bots() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::BotVsBot);
+        let cycle = ["b1c3", "b8c6", "c3b1", "c6b8"];
+        for _ in 0..2 {
+            for mv in cycle {
+                s.play_text(mv).unwrap();
+            }
+        }
+        assert!(s.is_game_over());
+        assert_eq!(s.game_result(), GameResult::DrawRepetition);
+        assert!(!s.engine_should_auto_move());
+        assert!(s.status().contains("repetition"));
+        assert!(s.play_text("g1f3").is_err());
     }
 
     #[test]
