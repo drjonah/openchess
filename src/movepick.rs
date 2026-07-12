@@ -293,7 +293,7 @@ fn quiet_score(board: &Board, mv: Move, ctx: &HistoryContext<'_>) -> i32 {
     } else {
         let piece = board.piece_on(mv.from());
         ctx.history
-            .quiet_score(ctx.stm, mv, piece, &ctx.cont_slots)
+            .quiet_score_with_pawns(ctx.stm, board, mv, piece, &ctx.cont_slots)
     }
 }
 

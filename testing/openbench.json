@@ -1,0 +1,27 @@
+{
+  "engine": "openchess",
+  "source": "https://github.com/openchess-repos/openchess-engine",
+  "build": {
+    "path": ".",
+    "compilers": ["cargo"],
+    "cpuflags": [],
+    "systems": ["linux", "macos"],
+    "command": "cargo build --release",
+    "binary": "./target/release/openchess"
+  },
+  "test": {
+    "book": "testing/books/openings.epd",
+    "book_format": "epd",
+    "time_control": "8+0.08",
+    "hash": 64,
+    "threads": 1,
+    "syzygy": null
+  },
+  "sprt": {
+    "elo0": 0,
+    "elo1": 5,
+    "alpha": 0.05,
+    "beta": 0.05
+  },
+  "notes": "Starter OpenBench-oriented config for P8-03. Adjust source URL and time controls for your private instance; local sprt.sh remains the primary day-to-day harness."
+}

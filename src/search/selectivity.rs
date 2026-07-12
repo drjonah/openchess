@@ -150,7 +150,7 @@ pub fn try_rfp(
 pub fn try_razoring(
     board: &mut Board,
     td: &mut ThreadData,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     stop: &AtomicBool,
     ply: usize,
     depth: i32,
@@ -188,7 +188,7 @@ pub fn null_move_reduction(depth: i32, improving: bool) -> i32 {
 pub fn try_null_move(
     board: &mut Board,
     td: &mut ThreadData,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     stop: &AtomicBool,
     ply: usize,
     depth: i32,
@@ -216,6 +216,8 @@ pub fn try_null_move(
 
     td.stack[ply].current_move = Move::NONE;
 
+    // Null move flips side-to-move only — no piece deltas — so the NNUE
+    // accumulator stays valid without an observer (see NnueState tests).
     board.do_null();
     let score = -search(
         board,
@@ -365,7 +367,7 @@ const PROBCUT_MOVES: i32 = 3;
 pub fn try_probcut(
     board: &mut Board,
     td: &mut ThreadData,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     stop: &AtomicBool,
     ply: usize,
     depth: i32,
@@ -427,7 +429,7 @@ pub fn try_probcut(
         }
 
         let moving_piece = board.piece_on(mv.from());
-        board.make(mv);
+        board.make_observed(mv, Some(&mut td.nnue));
         td.stack[ply + 1].cont_slot = ContSlot::new(moving_piece, mv.to());
         let score = -search(
             board,
@@ -441,7 +443,7 @@ pub fn try_probcut(
             NodeType::NonPv,
             Move::NONE,
         );
-        board.unmake(mv);
+        board.unmake_observed(mv, Some(&mut td.nnue));
 
         if stop.load(Ordering::Relaxed) {
             return None;
@@ -501,7 +503,7 @@ pub enum SingularResult {
 pub fn try_singular(
     board: &mut Board,
     td: &mut ThreadData,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     stop: &AtomicBool,
     ply: usize,
     depth: i32,
@@ -596,13 +598,13 @@ mod tests {
         let _guard = NMP_TEST_LOCK.lock().unwrap();
         let prev = NMP_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_null_move(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             6,
@@ -619,13 +621,13 @@ mod tests {
         init();
         let mut board = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
         assert_eq!(board.non_pawn_material(Color::White), 0);
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_null_move(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             6,
@@ -640,13 +642,13 @@ mod tests {
     fn nmp_skipped_below_min_depth() {
         init();
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_null_move(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             2,
@@ -688,13 +690,13 @@ mod tests {
     fn razoring_skipped_when_eval_not_low() {
         init();
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_razoring(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             2,
@@ -711,13 +713,13 @@ mod tests {
         let _guard = RAZORING_TEST_LOCK.lock().unwrap();
         RAZORING_ENABLED.store(true, Ordering::Relaxed);
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         let score = try_razoring(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             2,
@@ -734,13 +736,13 @@ mod tests {
         let _guard = RAZORING_TEST_LOCK.lock().unwrap();
         let prev = RAZORING_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_razoring(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             2,
@@ -758,13 +760,13 @@ mod tests {
         let _guard = SINGULAR_TEST_LOCK.lock().unwrap();
         let prev = SINGULAR_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         let result = try_singular(
             &mut board,
             &mut td,
-            &mut tt,
+            &tt,
             &stop,
             0,
             10,
@@ -783,7 +785,7 @@ mod tests {
     fn singular_skipped_shallow_or_pv() {
         init();
         let mut board = Board::startpos();
-        let mut td = ThreadData::new();
+        let mut td = ThreadData::default();
         let mut tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         // Shallow
@@ -791,7 +793,7 @@ mod tests {
             try_singular(
                 &mut board,
                 &mut td,
-                &mut tt,
+                &tt,
                 &stop,
                 0,
                 4,
@@ -809,7 +811,7 @@ mod tests {
             try_singular(
                 &mut board,
                 &mut td,
-                &mut tt,
+                &tt,
                 &stop,
                 0,
                 10,

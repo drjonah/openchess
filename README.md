@@ -17,6 +17,7 @@ openchess-tui/
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module layout and design details.
+Contributing / SPRT: [CONTRIBUTING.md](CONTRIBUTING.md) · [testing/](testing/).
 
 ## Build and run
 

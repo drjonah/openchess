@@ -73,7 +73,7 @@ pub fn run_bench(depth: i32, hash_mb: usize) -> BenchReport {
                 depth: Some(depth),
                 ..Default::default()
             },
-            &mut tt,
+            &tt,
             &stop,
             None,
         );
@@ -121,7 +121,7 @@ pub fn format_bench_report(report: &BenchReport) -> String {
 /// Locked node signature at [`BENCH_DEPTH`] with 16 MB TT (update when search changes).
 ///
 /// Captured from a release `bench` run; used as a regression gate.
-pub const BENCH_NODE_SIGNATURE: u64 = 68_821;
+pub const BENCH_NODE_SIGNATURE: u64 = 115_107;
 
 #[cfg(test)]
 mod tests {

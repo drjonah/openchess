@@ -25,13 +25,20 @@ pub enum NodeType {
 const MAX_QUIETS_TRACKED: usize = 64;
 const MAX_CAPTURES_TRACKED: usize = 32;
 
+/// Production leaf eval: NNUE + corrections + correction history.
+#[inline]
+fn evaluate_position(board: &Board, td: &ThreadData) -> Value {
+    let corr = td.history.correction_score(board);
+    eval::evaluate_nnue_state(board, &td.nnue, 0, corr)
+}
+
 /// Fail-soft alpha-beta / PVS search.
 ///
 /// `excluded` is set during singular verification to skip the TT move.
 pub fn search(
     board: &mut Board,
     td: &mut ThreadData,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     stop: &AtomicBool,
     ply: usize,
     depth: i32,
@@ -49,7 +56,7 @@ pub fn search(
 
     // Abort check (skip at root so we always finish a move if possible).
     if !is_root && (stop.load(Ordering::Relaxed) || ply >= MAX_PLY - 1) {
-        return eval::evaluate(board);
+        return evaluate_position(board, td);
     }
 
     // Draw by repetition / 50-move (Stockfish-style: twofold inside the tree).
@@ -108,7 +115,7 @@ pub fn search(
     let static_eval = if in_check {
         -VALUE_INFINITE
     } else {
-        eval::evaluate(board)
+        evaluate_position(board, td)
     };
     td.stack[ply].static_eval = static_eval;
 
@@ -274,7 +281,7 @@ pub fn search(
         }
 
         let moving_piece = board.piece_on(mv.from());
-        board.make(mv);
+        board.make_observed(mv, Some(&mut td.nnue));
         td.stack[ply + 1].cont_slot = ContSlot::new(moving_piece, mv.to());
         tt.prefetch(board.key());
 
@@ -347,7 +354,7 @@ pub fn search(
             }
         }
 
-        board.unmake(mv);
+        board.unmake_observed(mv, Some(&mut td.nnue));
 
         if stop.load(Ordering::Relaxed) {
             if is_root {
@@ -417,6 +424,12 @@ pub fn search(
         };
     }
 
+    // Correction history: nudge residual toward search truth vs static eval.
+    if !in_check && !singular_node && best_score.abs() < VALUE_MATE - 256 {
+        td.history
+            .update_correction(board, best_score - static_eval, depth);
+    }
+
     // TT store (skip during singular verification).
     if !singular_node {
         let bound = if best_score >= beta {
@@ -460,11 +473,13 @@ fn update_quiet_stats(
 
     td.history.update(stm, mv, bonus);
     td.history.update_continuation(&cont, piece, mv.to(), bonus);
+    td.history.pawn_update(board, piece, mv.to(), bonus);
     for &q in previous_quiets {
         if q != mv {
             let qp = board.piece_on(q.from());
             td.history.update(stm, q, -bonus);
             td.history.update_continuation(&cont, qp, q.to(), -bonus);
+            td.history.pawn_update(board, qp, q.to(), -bonus);
         }
     }
 }
@@ -511,7 +526,7 @@ fn cont_slots_for_ply(stack: &[Stack], ply: usize) -> [ContSlot; 4] {
 pub fn qsearch(
     board: &mut Board,
     td: &mut ThreadData,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     stop: &AtomicBool,
     ply: usize,
     mut alpha: Value,
@@ -522,7 +537,7 @@ pub fn qsearch(
 
     const MAX_QS_CHECKS: u8 = 2;
     if stop.load(Ordering::Relaxed) || ply >= MAX_PLY - 1 {
-        return eval::evaluate(board);
+        return evaluate_position(board, td);
     }
 
     while td.stack.len() <= ply + 1 {
@@ -552,7 +567,7 @@ pub fn qsearch(
     let mut best_score = if in_check {
         -VALUE_INFINITE
     } else {
-        let stand_pat = eval::evaluate(board);
+        let stand_pat = evaluate_position(board, td);
         if stand_pat >= beta {
             tt.store(
                 key,
@@ -570,7 +585,7 @@ pub fn qsearch(
     };
 
     if in_check && checks >= MAX_QS_CHECKS {
-        return eval::evaluate(board);
+        return evaluate_position(board, td);
     }
 
     const DELTA_MARGIN: Value = 900;
@@ -609,11 +624,11 @@ pub fn qsearch(
             }
         }
 
-        board.make(mv);
+        board.make_observed(mv, Some(&mut td.nnue));
         tt.prefetch(board.key());
         let next_checks = if in_check { checks + 1 } else { 0 };
         let score = -qsearch(board, td, tt, stop, ply + 1, -beta, -alpha, next_checks);
-        board.unmake(mv);
+        board.unmake_observed(mv, Some(&mut td.nnue));
 
         if stop.load(Ordering::Relaxed) {
             return best_score;

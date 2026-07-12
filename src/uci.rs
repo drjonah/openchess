@@ -1,7 +1,7 @@
 //! UCI protocol loop with options and debug helpers (P7-01 / P7-03).
 
 use crate::board::Board;
-use crate::eval;
+use crate::eval::{self, Network};
 use crate::search::{self, Limits};
 use crate::time::DEFAULT_MOVE_OVERHEAD_MS;
 use crate::tools::{self, BENCH_DEPTH};
@@ -9,14 +9,19 @@ use crate::transposition::TranspositionTable;
 use crate::types::score::{VALUE_MATE, VALUE_MATED};
 use crate::types::{Color, Value};
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Session state for UCI options that persist across `go` commands.
 struct UciState {
     move_overhead_ms: u64,
-    /// Stub until Lazy SMP (P8-01); accepted but ignored.
+    /// Lazy SMP worker count.
     threads: u32,
+    /// Loaded NNUE network (embedded by default). Search uses this leaf eval.
+    network: Arc<Network>,
+    eval_file: String,
 }
 
 impl Default for UciState {
@@ -24,6 +29,8 @@ impl Default for UciState {
         Self {
             move_overhead_ms: DEFAULT_MOVE_OVERHEAD_MS,
             threads: 1,
+            network: Network::embedded_shared(),
+            eval_file: String::new(),
         }
     }
 }
@@ -53,10 +60,14 @@ pub fn message_loop() {
                 let _ = writeln!(stdout, "id name OpenChess");
                 let _ = writeln!(stdout, "id author OpenChess contributors");
                 let _ = writeln!(stdout, "option name Hash type spin default 16 min 1 max 1024");
-                let _ = writeln!(stdout, "option name Threads type spin default 1 min 1 max 1");
+                let _ = writeln!(stdout, "option name Threads type spin default 1 min 1 max 512");
                 let _ = writeln!(
                     stdout,
                     "option name Move Overhead type spin default {DEFAULT_MOVE_OVERHEAD_MS} min 0 max 5000"
+                );
+                let _ = writeln!(
+                    stdout,
+                    "option name EvalFile type string default <embedded>"
                 );
                 let _ = writeln!(stdout, "uciok");
             }
@@ -72,7 +83,9 @@ pub fn message_loop() {
             }
             "go" => {
                 stop.store(false, Ordering::Relaxed);
-                let limits = parse_go(line, state.move_overhead_ms);
+                let mut limits = parse_go(line, state.move_overhead_ms);
+                limits.threads = state.threads;
+                limits.network = Some(Arc::clone(&state.network));
                 let mut b = board.clone();
 
                 let mut on_info =
@@ -84,7 +97,7 @@ pub fn message_loop() {
                         );
                     };
 
-                let result = search::go(&mut b, limits, &mut tt, &stop, Some(&mut on_info));
+                let result = search::go(&mut b, limits, &tt, &stop, Some(&mut on_info));
 
                 let mv = if result.best_move.is_none() {
                     "0000".to_string()
@@ -118,8 +131,13 @@ pub fn message_loop() {
                 let _ = writeln!(stdout, "nodes {nodes}");
             }
             "eval" => {
-                let score = eval::evaluate(&board);
-                let _ = writeln!(stdout, "eval cp {score}");
+                let hce = eval::evaluate_hce(&board);
+                let nnue = eval::evaluate_nnue(&board, &state.network);
+                let raw = eval::nnue::evaluate_raw_board(&board, &state.network);
+                let _ = writeln!(stdout, "eval hce cp {hce}");
+                let _ = writeln!(stdout, "eval nnue cp {nnue} (raw {raw})");
+                // Primary line: NNUE is the search leaf.
+                let _ = writeln!(stdout, "eval cp {nnue}");
             }
             "d" => {
                 dump_position(&mut stdout, &board);
@@ -154,14 +172,29 @@ fn apply_setoption(line: &str, tt: &mut TranspositionTable, state: &mut UciState
         }
         "Threads" => {
             if let Ok(n) = value.parse::<u32>() {
-                // Stub for P8-01 Lazy SMP: accept and store, still single-threaded.
-                state.threads = n.max(1);
-                let _ = state.threads;
+                state.threads = n.clamp(1, 512);
             }
         }
         "Move Overhead" => {
             if let Ok(ms) = value.parse::<u64>() {
                 state.move_overhead_ms = ms.min(5000);
+            }
+        }
+        "EvalFile" => {
+            let path = tokens[val_i + 1..].join(" ");
+            if path.is_empty() || path == "<embedded>" || path == "None" {
+                state.network = Network::embedded_shared();
+                state.eval_file.clear();
+            } else {
+                match Network::load_file(Path::new(&path)) {
+                    Ok(net) => {
+                        state.network = Arc::new(net);
+                        state.eval_file = path;
+                    }
+                    Err(e) => {
+                        eprintln!("info string failed to load EvalFile '{path}': {e}");
+                    }
+                }
             }
         }
         _ => {}

@@ -1,14 +1,15 @@
-//! Hand-crafted evaluation bootstrap (material + midgame PSTs).
+//! Hand-crafted evaluation bootstrap (material + tapered PSTs, P6-03).
 
 use crate::board::Board;
 use crate::eval::pst;
 use crate::types::score::piece_value;
 use crate::types::{Color, PieceType, Value};
 
-/// Side-to-move relative evaluation: material + midgame piece-square tables.
+/// Side-to-move relative evaluation: material + tapered piece-square tables.
 ///
-/// Sums piece values and PST bonuses for White minus Black (kings excluded
-/// from both material and PST), then negates when Black is to move.
+/// Sums piece values for White minus Black (kings excluded), adds MG/EG
+/// PST interpolation by non-pawn game phase, then negates when Black is
+/// to move.
 pub fn evaluate(board: &Board) -> Value {
     let mut white = 0;
     let mut black = 0;
@@ -26,7 +27,7 @@ pub fn evaluate(board: &Board) -> Value {
         black += value * (bb & board.pieces_color(Color::Black)).count() as Value;
     }
 
-    let score = white - black + pst::pst_midgame(board);
+    let score = white - black + pst::pst_tapered(board);
     if board.side_to_move() == Color::White {
         score
     } else {
@@ -79,8 +80,14 @@ mod tests {
         let sq = Square::from_str("d4").unwrap();
         board.put_piece(Piece::WhiteQueen, sq);
         board.rehash();
-        let expected =
-            piece_value(PieceType::Queen) + pst::pst_value(PieceType::Queen, sq, Color::White);
+
+        let phase = pst::game_phase(&board);
+        let pst = pst::taper(
+            pst::pst_value_mg(PieceType::Queen, sq, Color::White),
+            pst::pst_value_eg(PieceType::Queen, sq, Color::White),
+            phase,
+        );
+        let expected = piece_value(PieceType::Queen) + pst;
         assert_eq!(evaluate(&board), expected);
     }
 
@@ -104,5 +111,33 @@ mod tests {
             center_score > rim_score,
             "knight on e5 ({center_score}) should beat a1 ({rim_score})"
         );
+    }
+
+    #[test]
+    fn kp_vs_k_uses_pure_eg_pst() {
+        let mut board = Board::empty();
+        board.put_piece(Piece::WhiteKing, Square::from_str("e1").unwrap());
+        board.put_piece(Piece::BlackKing, Square::from_str("e8").unwrap());
+        let sq = Square::from_str("e5").unwrap();
+        board.put_piece(Piece::WhitePawn, sq);
+        board.rehash();
+
+        assert_eq!(pst::game_phase(&board), 0);
+        let expected =
+            piece_value(PieceType::Pawn) + pst::pst_value_eg(PieceType::Pawn, sq, Color::White);
+        assert_eq!(evaluate(&board), expected);
+        // EG endpoint must differ from what pure MG would have scored.
+        assert_ne!(
+            pst::pst_value_eg(PieceType::Pawn, sq, Color::White),
+            pst::pst_value_mg(PieceType::Pawn, sq, Color::White)
+        );
+    }
+
+    #[test]
+    fn full_material_uses_pure_mg_pst() {
+        let board = Board::startpos();
+        assert_eq!(pst::game_phase(&board), pst::PHASE_MAX);
+        assert_eq!(pst::pst_tapered(&board), pst::pst_midgame(&board));
+        assert_eq!(evaluate(&board), 0);
     }
 }

@@ -4,6 +4,8 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     openchess::lookup::initialize();
+    // Warm the embedded NNUE once so the first `go` is not a cold FT build.
+    let _ = openchess::eval::Network::embedded_shared();
 
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {

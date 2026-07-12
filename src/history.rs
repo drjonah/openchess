@@ -1,11 +1,13 @@
-//! History tables for move ordering (P3-03 / P3-04).
+//! History tables for move ordering (P3-03 / P3-04) and eval corrections (P6-07).
 //!
 //! - Butterfly quiet history: `[Color][from][to]`
 //! - Capture history: `[piece][to][captured_type]`
 //! - Continuation history: `[prev_piece][prev_to][piece][to]`
+//! - Pawn history: `[pawn_key][piece][to]` for quiet ordering
+//! - Correction history: pawn / non-pawn residuals vs static eval
 
 use crate::board::Board;
-use crate::types::{Color, Move, Piece, PieceType, Square};
+use crate::types::{Color, Move, Piece, PieceType, Square, Value};
 
 /// Soft clamp for history entries (Stockfish-family gravity scale).
 pub const HISTORY_MAX: i32 = 16384;
@@ -57,7 +59,13 @@ pub const CONT_PLIES: [usize; 4] = [1, 2, 4, 6];
 
 const CONT_LEN: usize = PIECE_SLOTS * 64 * PIECE_SLOTS * 64;
 
-/// Butterfly + capture + continuation history tables.
+/// Buckets for pawn-keyed tables (pawn history + pawn correction).
+const PAWN_BUCKETS: usize = 16_384;
+const PAWN_MASK: u64 = (PAWN_BUCKETS as u64) - 1;
+
+const CORR_MAX: i32 = 1024;
+
+/// Butterfly + capture + continuation + pawn + correction history tables.
 #[derive(Clone, Debug)]
 pub struct HistoryTables {
     /// `[color][from][to]`
@@ -66,6 +74,12 @@ pub struct HistoryTables {
     capture: [[[i16; PieceType::COUNT]; 64]; PIECE_SLOTS],
     /// Flat `[prev_piece][prev_to][piece][to]` (heap-backed to avoid stack blowups).
     continuation: Vec<i16>,
+    /// `[pawn_bucket][piece_slot][to]` — quiet moves keyed by pawn structure.
+    pawn_history: Vec<i16>,
+    /// Pawn-structure correction residual (STM-relative after sign).
+    pawn_corr: Vec<i16>,
+    /// Non-pawn material/placement correction residual per side.
+    nonpawn_corr: [Vec<i16>; Color::COUNT],
 }
 
 impl Default for HistoryTables {
@@ -80,6 +94,9 @@ impl HistoryTables {
             butterfly: [[[0; 64]; 64]; Color::COUNT],
             capture: [[[0; PieceType::COUNT]; 64]; PIECE_SLOTS],
             continuation: vec![0; CONT_LEN],
+            pawn_history: vec![0; PAWN_BUCKETS * PIECE_SLOTS * 64],
+            pawn_corr: vec![0; PAWN_BUCKETS],
+            nonpawn_corr: [vec![0; PAWN_BUCKETS], vec![0; PAWN_BUCKETS]],
         }
     }
 
@@ -87,6 +104,10 @@ impl HistoryTables {
         self.butterfly = [[[0; 64]; 64]; Color::COUNT];
         self.capture = [[[0; PieceType::COUNT]; 64]; PIECE_SLOTS];
         self.continuation.fill(0);
+        self.pawn_history.fill(0);
+        self.pawn_corr.fill(0);
+        self.nonpawn_corr[0].fill(0);
+        self.nonpawn_corr[1].fill(0);
     }
 
     // --- Butterfly ---
@@ -173,9 +194,48 @@ impl HistoryTables {
         }
     }
 
+    // --- Pawn history (P3-04) ---
+
+    #[inline]
+    pub fn pawn_get(&self, board: &Board, piece: Piece, to: Square) -> i32 {
+        let idx = pawn_hist_index(pawn_structure_key(board), piece.slot_index(), to.index() as usize);
+        self.pawn_history[idx] as i32
+    }
+
+    #[inline]
+    pub fn pawn_update(&mut self, board: &Board, piece: Piece, to: Square, bonus: i32) {
+        let idx = pawn_hist_index(pawn_structure_key(board), piece.slot_index(), to.index() as usize);
+        apply_gravity(&mut self.pawn_history[idx], bonus);
+    }
+
+    // --- Correction history (P6-07) ---
+
+    /// STM-relative correction residual from pawn + non-pawn tables.
+    #[inline]
+    pub fn correction_score(&self, board: &Board) -> Value {
+        let stm = board.side_to_move();
+        let pk = pawn_structure_key(board);
+        let npk = nonpawn_structure_key(board, stm);
+        let pawn = self.pawn_corr[(pk & PAWN_MASK) as usize] as i32;
+        let nonpawn = self.nonpawn_corr[stm.index()][(npk & PAWN_MASK) as usize] as i32;
+        // Blend; keep small so raw NNUE dominates.
+        ((pawn + nonpawn) / 2) as Value
+    }
+
+    /// Gravity-update correction tables toward `diff = search_score - static_eval`.
+    #[inline]
+    pub fn update_correction(&mut self, board: &Board, diff: Value, depth: i32) {
+        let bonus = (diff.clamp(-CORR_MAX, CORR_MAX) * depth.max(1) / 8).clamp(-CORR_MAX, CORR_MAX);
+        let stm = board.side_to_move();
+        let pk = (pawn_structure_key(board) & PAWN_MASK) as usize;
+        let npk = (nonpawn_structure_key(board, stm) & PAWN_MASK) as usize;
+        apply_corr_gravity(&mut self.pawn_corr[pk], bonus);
+        apply_corr_gravity(&mut self.nonpawn_corr[stm.index()][npk], bonus);
+    }
+
     // --- Stable read API (P5 LMR / LMP) ---
 
-    /// Butterfly + continuation for a quiet move (killers stay in movepick).
+    /// Butterfly + continuation + pawn history for a quiet move.
     #[inline]
     pub fn quiet_score(
         &self,
@@ -185,6 +245,19 @@ impl HistoryTables {
         cont_slots: &[ContSlot; 4],
     ) -> i32 {
         self.get(color, mv) + self.continuation_score(cont_slots, piece, mv.to())
+    }
+
+    /// Quiet score including pawn-structure history when a board is available.
+    #[inline]
+    pub fn quiet_score_with_pawns(
+        &self,
+        color: Color,
+        board: &Board,
+        mv: Move,
+        piece: Piece,
+        cont_slots: &[ContSlot; 4],
+    ) -> i32 {
+        self.quiet_score(color, mv, piece, cont_slots) + self.pawn_get(board, piece, mv.to())
     }
 
     /// Capture-history term for a noisy move (0 if not a capture / EP).
@@ -253,6 +326,37 @@ pub fn capture_key(board: &Board, mv: Move) -> Option<(Piece, Square, PieceType)
     Some((piece, mv.to(), captured))
 }
 
+/// Zobrist-like mix of both sides' pawn bitboards.
+#[inline]
+pub fn pawn_structure_key(board: &Board) -> u64 {
+    let pawns = board.pieces(PieceType::Pawn);
+    let wp = (pawns & board.pieces_color(Color::White)).0;
+    let bp = (pawns & board.pieces_color(Color::Black)).0;
+    wp.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ bp.wrapping_mul(0xBF58_476D_1CE4_E5B9)
+}
+
+/// Mix of STM non-pawn piece placement (excl. kings lightly).
+#[inline]
+pub fn nonpawn_structure_key(board: &Board, color: Color) -> u64 {
+    let mut k = 0u64;
+    for &pt in &[
+        PieceType::Knight,
+        PieceType::Bishop,
+        PieceType::Rook,
+        PieceType::Queen,
+    ] {
+        let bb = (board.pieces(pt) & board.pieces_color(color)).0;
+        k ^= bb.wrapping_mul(0xD6E8_FEB8_6659_FD93u64.wrapping_add(pt.index() as u64));
+    }
+    k
+}
+
+#[inline]
+fn pawn_hist_index(pawn_key: u64, piece: usize, to: usize) -> usize {
+    let bucket = (pawn_key & PAWN_MASK) as usize;
+    (bucket * PIECE_SLOTS + piece) * 64 + to
+}
+
 #[inline]
 fn cont_index(prev_piece: usize, prev_to: usize, piece: usize, to: usize) -> usize {
     (((prev_piece * 64) + prev_to) * PIECE_SLOTS + piece) * 64 + to
@@ -265,6 +369,14 @@ fn apply_gravity(entry: &mut i16, bonus: i32) {
     let cur = *entry as i32;
     let next = cur + bonus - cur * bonus.abs() / HISTORY_MAX;
     *entry = next.clamp(-HISTORY_MAX, HISTORY_MAX) as i16;
+}
+
+#[inline]
+fn apply_corr_gravity(entry: &mut i16, bonus: i32) {
+    let bonus = bonus.clamp(-CORR_MAX, CORR_MAX);
+    let cur = *entry as i32;
+    let next = cur + bonus - cur * bonus.abs() / CORR_MAX;
+    *entry = next.clamp(-CORR_MAX, CORR_MAX) as i16;
 }
 
 /// Depth-squared history bonus (clamped).
@@ -292,6 +404,30 @@ mod tests {
             Square::from_index_unchecked(11), // d2
             Square::from_index_unchecked(27), // d4
         )
+    }
+
+    #[test]
+    fn pawn_history_orders_quiet_under_same_structure() {
+        lookup::initialize();
+        let mut h = HistoryTables::new();
+        let board = Board::startpos();
+        let e2e4 = e2e4();
+        let d2d4 = d2d4();
+        h.pawn_update(&board, Piece::WhitePawn, e2e4.to(), history_bonus(5));
+        assert!(
+            h.pawn_get(&board, Piece::WhitePawn, e2e4.to())
+                > h.pawn_get(&board, Piece::WhitePawn, d2d4.to())
+        );
+    }
+
+    #[test]
+    fn correction_history_moves_score() {
+        lookup::initialize();
+        let mut h = HistoryTables::new();
+        let board = Board::startpos();
+        assert_eq!(h.correction_score(&board), 0);
+        h.update_correction(&board, 200, 6);
+        assert_ne!(h.correction_score(&board), 0);
     }
 
     #[test]

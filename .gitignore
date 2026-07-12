@@ -22,3 +22,6 @@ target
 
 # Credentials
 .env
+
+# Local SPRT output
+testing/last-sprt.pgn

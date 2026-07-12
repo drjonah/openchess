@@ -711,7 +711,7 @@ impl EngineSession {
             let out = search::go(
                 &mut board,
                 search_limits,
-                &mut tt,
+                &tt,
                 &stop_t,
                 Some(&mut on_info),
             );

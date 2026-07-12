@@ -4,8 +4,14 @@
 //! mate/TB scores via [`crate::types::score::value_to_tt`] /
 //! [`crate::types::score::value_from_tt`] around [`TranspositionTable::store`] /
 //! [`TranspositionTable::probe`].
+//!
+//! **Lazy SMP:** [`probe`] / [`store`] take `&self` and are intentionally racy
+//! (Stockfish-family). Concurrent writers may tear an entry; that is accepted
+//! for NPS. Only documented shared mutable structure besides atomics.
 
 use crate::types::{Key, Move, Value};
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Bound type for a TT entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,13 +63,17 @@ struct Cluster {
 
 /// Clustered transposition table with depth- and age-aware replacement.
 pub struct TranspositionTable {
-    clusters: Vec<Cluster>,
+    clusters: Box<[UnsafeCell<Cluster>]>,
     /// Mask so `key & cluster_mask` indexes a cluster.
     cluster_mask: u64,
-    age: u8,
+    age: AtomicU8,
     /// Number of clusters (power of two).
     cluster_count: usize,
 }
+
+// SAFETY: clusters are only accessed via racy probe/store; callers accept tears.
+unsafe impl Sync for TranspositionTable {}
+unsafe impl Send for TranspositionTable {}
 
 impl TranspositionTable {
     /// Allocate a table of roughly `size_mb` megabytes.
@@ -74,28 +84,34 @@ impl TranspositionTable {
         if cluster_count == 0 {
             cluster_count = 1;
         }
-        // Keep a usable minimum even for tiny requests.
         cluster_count = cluster_count.max(16);
 
+        let clusters: Vec<UnsafeCell<Cluster>> = (0..cluster_count)
+            .map(|_| UnsafeCell::new(Cluster::default()))
+            .collect();
+
         Self {
-            clusters: vec![Cluster::default(); cluster_count],
+            clusters: clusters.into_boxed_slice(),
             cluster_mask: (cluster_count as u64) - 1,
-            age: 0,
+            age: AtomicU8::new(0),
             cluster_count,
         }
     }
 
     /// Clear all entries and reset age.
-    pub fn clear(&mut self) {
-        for cluster in &mut self.clusters {
-            *cluster = Cluster::default();
+    pub fn clear(&self) {
+        for cluster in self.clusters.iter() {
+            // SAFETY: exclusive clear — caller must not search concurrently.
+            unsafe {
+                *cluster.get() = Cluster::default();
+            }
         }
-        self.age = 0;
+        self.age.store(0, Ordering::Relaxed);
     }
 
     /// Bump generation age for a new search (wraps at 256).
-    pub fn new_search(&mut self) {
-        self.age = self.age.wrapping_add(1);
+    pub fn new_search(&self) {
+        self.age.fetch_add(1, Ordering::Relaxed);
     }
 
     #[inline]
@@ -104,11 +120,9 @@ impl TranspositionTable {
     }
 
     /// Probe for an entry matching `key`.
-    ///
-    /// Returns the raw stored score; apply [`crate::types::score::value_from_tt`]
-    /// at the search ply before using mate/TB scores.
     pub fn probe(&self, key: Key) -> Option<TtEntry> {
-        let cluster = &self.clusters[self.cluster_index(key)];
+        // SAFETY: racy read of a Copy cluster; torn reads may miss — acceptable.
+        let cluster = unsafe { *self.clusters[self.cluster_index(key)].get() };
         for entry in &cluster.entries {
             if entry.bound != Bound::None && entry.key == key {
                 return Some(*entry);
@@ -117,41 +131,31 @@ impl TranspositionTable {
         None
     }
 
-    /// Hint that `key` will be probed soon (typically right after `make`).
-    ///
-    /// Architecture-specific prefetch when available; otherwise a no-op.
-    /// Correctness-neutral — safe to call unconditionally.
+    /// Prefetch hint for a soon-to-be-probed key.
     #[inline]
     pub fn prefetch(&self, key: Key) {
         let idx = self.cluster_index(key);
         let ptr = self.clusters.as_ptr().wrapping_add(idx) as *const u8;
-        // Touch the address so the computation is not dead on no-op targets.
         let _ = ptr;
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: prefetch is a pure hint; `ptr` points into our allocation.
             unsafe {
                 core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
                     ptr as *const i8,
                 );
             }
         }
-        // aarch64 `_prefetch` is still unstable (`stdarch_aarch64_prefetch`); no-op on ARM for now.
     }
 
     /// Store an entry, replacing the least valuable slot in the cluster.
-    ///
-    /// `score` is stored as-is; callers should pass [`crate::types::score::value_to_tt`]
-    /// for mate/TB scores.
-    pub fn store(&mut self, key: Key, mv: Move, score: Value, depth: i16, bound: Bound) {
-        let age = self.age;
+    pub fn store(&self, key: Key, mv: Move, score: Value, depth: i16, bound: Bound) {
+        let age = self.age.load(Ordering::Relaxed);
         let idx = self.cluster_index(key);
-        let cluster = &mut self.clusters[idx];
+        // SAFETY: racy write — intentional for Lazy SMP.
+        let cluster = unsafe { &mut *self.clusters[idx].get() };
 
-        // Prefer overwriting the same key if present.
         for entry in &mut cluster.entries {
             if entry.bound != Bound::None && entry.key == key {
-                // Keep the existing move if the new store has none.
                 let keep_move = if mv.is_none() { entry.mv } else { mv };
                 *entry = TtEntry {
                     key,
@@ -165,7 +169,6 @@ impl TranspositionTable {
             }
         }
 
-        // Otherwise replace the worst entry (empty, stale age, or shallow depth).
         let mut replace = 0usize;
         let mut worst = i32::MAX;
         for (i, entry) in cluster.entries.iter().enumerate() {
@@ -193,16 +196,17 @@ impl TranspositionTable {
 
     /// Approximate fill in permille (0..=1000), Stockfish-style hashfull.
     pub fn hashfull(&self) -> u32 {
+        let age = self.age.load(Ordering::Relaxed);
         let sample = self.cluster_count.min(1000);
         let mut used = 0u32;
-        for cluster in self.clusters.iter().take(sample) {
+        for cluster_cell in self.clusters.iter().take(sample) {
+            let cluster = unsafe { *cluster_cell.get() };
             for entry in &cluster.entries {
-                if entry.bound != Bound::None && entry.age == self.age {
+                if entry.bound != Bound::None && entry.age == age {
                     used += 1;
                 }
             }
         }
-        // used / (sample * CLUSTER_SIZE) * 1000
         (used * 1000) / (sample as u32 * CLUSTER_SIZE as u32)
     }
 
@@ -218,7 +222,7 @@ mod tests {
 
     #[test]
     fn store_then_probe_hits() {
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let key = 0xDEAD_BEEF_CAFE_BABEu64;
         let mv = Move::new(
             Square::from_index_unchecked(12),
@@ -234,18 +238,24 @@ mod tests {
 
     #[test]
     fn wrong_key_misses() {
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         tt.store(1, Move::NONE, 0, 1, Bound::Exact);
         assert!(tt.probe(2).is_none());
     }
 
     #[test]
     fn hashfull_rises_under_fill() {
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         tt.new_search();
         let before = tt.hashfull();
         for i in 0..5000u64 {
-            tt.store(i.wrapping_mul(0x9E37_79B9_7F4A_7C15), Move::NONE, 0, 3, Bound::Lower);
+            tt.store(
+                i.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                Move::NONE,
+                0,
+                3,
+                Bound::Lower,
+            );
         }
         let after = tt.hashfull();
         assert!(after > before, "hashfull {before} -> {after}");
@@ -253,7 +263,7 @@ mod tests {
 
     #[test]
     fn same_key_updates_in_place() {
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let key = 99u64;
         let mv = Move::new(
             Square::from_index_unchecked(0),

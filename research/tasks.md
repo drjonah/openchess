@@ -286,7 +286,7 @@ flowchart TB
   - **Deliverable:** Noisy history; continuation (1/2/… ply); optional pawn-structure keyed history  
   - **Acceptance:** Histories update without overflowing; LMR/LMP can read scores (API stable)  
   - **Research:** reckless `history.rs` · stockfish continuation/pawn history  
-  - **Note:** Capture + continuation (plies 1/2/4/6); pawn history deferred; `quiet_score`/`capture_score`/`stat_score` stable for P5.
+  - **Note:** Capture + continuation (plies 1/2/4/6) + pawn history; `quiet_score`/`capture_score`/`stat_score` stable for P5.
 
 ---
 
@@ -409,42 +409,47 @@ flowchart TB
   - **Deliverable:** Midgame PSTs added to material  
   - **Acceptance:** Knight on rim < knight on center all else equal  
   - **Research:** chesswiki PSTs  
-  - **Note:** Midgame-only in `eval/pst.rs`; tapering deferred to P6-03.
+  - **Note:** Midgame-only in `eval/pst.rs`; tapering done in P6-03.
 
-- [ ] **P6-03** — Tapered HCE extras (optional growth)  
+- [x] **P6-03** — Tapered HCE extras (optional growth)  
   - **Deps:** P6-02  
   - **Parallel-ok:** P5-*, P2-*  
   - **Deliverable:** Phase interpolate MG/EG; basic pawn structure / king safety as needed  
   - **Acceptance:** Phase 0 and phase 24 endpoints differ sensibly; no search crashes  
-  - **Research:** chesswiki HCE terms · Phase C in chesswiki §8
+  - **Research:** chesswiki HCE terms · Phase C in chesswiki §8  
+  - **Note:** EG PSTs + non-pawn phase 0..24 taper in `pst.rs`/`hce.rs`; no pawn/king-safety extras yet.
 
-- [ ] **P6-04** — Board observer hooks for incremental eval  
+- [x] **P6-04** — Board observer hooks for incremental eval  
   - **Deps:** P1-04, P6-01  
   - **Parallel-ok:** P6-05 design  
   - **Deliverable:** Observer callbacks on piece add/remove/move for accumulator dirty tracking  
   - **Acceptance:** Make/unmake notifies matching feature deltas in a mock observer  
-  - **Research:** reckless `BoardObserver` · stockfish dirty features
+  - **Research:** reckless `BoardObserver` · stockfish dirty features  
+  - **Note:** `on_add`/`on_remove` mid-update; `on_make`/`on_unmake` bookends; covers quiet/capture/promo/EP/castle.
 
-- [ ] **P6-05** — NNUE feature transformer + accumulator  
+- [x] **P6-05** — NNUE feature transformer + accumulator  
   - **Deps:** P6-04, P1-10  
   - **Parallel-ok:** P5-05, P8-03  
   - **Deliverable:** Sparse king-relative (or chosen) features; dual accumulators; incremental update + refresh  
   - **Acceptance:** Incremental accumulator matches full refresh after random games  
-  - **Research:** reckless §7.1–7.3 · stockfish §10.1–10.4 · chesswiki NNUE
+  - **Research:** reckless §7.1–7.3 · stockfish §10.1–10.4 · chesswiki NNUE  
+  - **Note:** HalfKA dual accumulators L1=256 in `eval/nnue/`; search uses `make_observed`; production leaf is NNUE.
 
-- [ ] **P6-06** — NNUE forward (quantized) + embed/load net  
+- [x] **P6-06** — NNUE forward (quantized) + embed/load net  
   - **Deps:** P6-05  
   - **Parallel-ok:** P5-06, P7 EvalFile option  
   - **Deliverable:** FT → small MLP → scalar; load embedded or file weights; SIMD optional later  
   - **Acceptance:** `eval` on startpos finite/stable; same position → same score; NPS still usable vs HCE  
-  - **Research:** reckless §7.2 · stockfish Network::evaluate
+  - **Research:** reckless §7.2 · stockfish Network::evaluate  
+  - **Note:** Dense head + FT in `OCNNv002`; UCI `EvalFile`; search leaf is NNUE bootstrap (material-distilled) until Bullet-trained nets.
 
-- [ ] **P6-07** — Post-NNUE corrections  
+- [x] **P6-07** — Post-NNUE corrections  
   - **Deps:** P6-06, P3-04 (correction history tables may live with history)  
   - **Parallel-ok:** P8-01  
   - **Deliverable:** Material/optimism scaling, 50-move dampening, correction history residual; clamp vs mate range  
   - **Acceptance:** Raw net ≠ final eval when corrections active; mate scores not clobbered  
-  - **Research:** reckless §7.4 · stockfish `evaluate.cpp`
+  - **Research:** reckless §7.4 · stockfish `evaluate.cpp`  
+  - **Note:** `eval/corrections.rs` material+optimism+50-move+mate clamp + pawn/non-pawn correction history residual.
 
 ---
 
@@ -477,14 +482,15 @@ flowchart TB
   - **Deliverable:** `Hash`, `Threads` (stub until P8), `Move Overhead`; `bench` / `perft` / `eval` / `d`  
   - **Acceptance:** `setoption name Hash value 64` resizes TT; `bench` prints nodes  
   - **Research:** reckless UCI options table · stockfish §15  
-  - **Note:** `Threads` stub (max 1); `Move Overhead` session option; `hashfull` in info.
+  - **Note:** `Threads` Lazy SMP (max 512); `Move Overhead` session option; `hashfull` in info; `EvalFile` loads NNUE for search.
 
-- [ ] **P7-04** — Adaptive TM (stability)  
+- [x] **P7-04** — Adaptive TM (stability)  
   - **Deps:** P7-02, P2-05  
   - **Parallel-ok:** P5-*, P8-*  
   - **Deliverable:** Spend more on best-move changes / eval swings; less when stable  
   - **Acceptance:** Volatile roots use more of optimum than dead-drawn roots in logging  
-  - **Research:** stockfish fallingEval / bestMoveChanges · reckless TM
+  - **Research:** stockfish fallingEval / bestMoveChanges · reckless TM  
+  - **Note:** `IdStability` + `soft_scale(falling×instability)`; hard limit unchanged.
 
 ---
 
@@ -596,12 +602,13 @@ flowchart TB
   - **Research:** chesswiki Engine Testing · stockfish tests/  
   - **Note:** `tools/bench.rs` + `scripts/ci.sh` + `.github/workflows/ci.yml`; `BENCH_NODE_SIGNATURE` gate.
 
-- [ ] **P8-01** — Lazy SMP  
+- [x] **P8-01** — Lazy SMP  
   - **Deps:** P2-06, P4-02, P3-03, P7-03  
   - **Parallel-ok:** P6-07, P8-03  
   - **Deliverable:** N workers search same root; shared TT; per-thread histories/accumulators; best-thread vote  
   - **Acceptance:** `Threads 4` increases NPS; no data races under TSan (or documented racy TT only); still legal bestmove  
-  - **Research:** reckless Lazy SMP · stockfish ThreadPool
+  - **Research:** reckless Lazy SMP · stockfish ThreadPool  
+  - **Note:** `threadpool.rs` Lazy SMP; racy shared TT via `UnsafeCell`; `Threads` UCI max 512.
 
 - [ ] **P8-02** — Syzygy (optional)  
   - **Deps:** P2-06, P7-03  
@@ -610,12 +617,13 @@ flowchart TB
   - **Acceptance:** Known 5-man win returns TB score/mate bound; root ranking prefers DTZ-progress  
   - **Research:** chesswiki Syzygy · reckless `tb.rs` · stockfish syzygy/
 
-- [ ] **P8-03** — OpenBench / SPRT workflow  
+- [x] **P8-03** — OpenBench / SPRT workflow  
   - **Deps:** P7-01, P8-00, Phase B search minimum  
   - **Parallel-ok:** P5-06, P6-06, P8-01  
   - **Deliverable:** Match book + cutechess/OpenBench config; SPRT accept/reject doc for patches  
   - **Acceptance:** Can run self-play SPRT locally; CONTRIBUTING-style rule: functional PRs link a test  
-  - **Research:** chesswiki §7 · stockfish Fishtest · reckless OpenBench
+  - **Research:** chesswiki §7 · stockfish Fishtest · reckless OpenBench  
+  - **Note:** `testing/sprt.sh` + `books/openings.epd` + `openbench.json`; `CONTRIBUTING.md` strength-PR rule.
 
 - [ ] **P8-04** — Perf polish (PGO / SIMD / NUMA)  
   - **Deps:** P6-06, P8-01  
