@@ -25,6 +25,15 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
         return;
     };
 
+    if game.plies.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No moves yet\nchoose a mode or i import")
+                .style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    }
+
     let mut lines: Vec<Line> = Vec::new();
 
     // Header: players / result

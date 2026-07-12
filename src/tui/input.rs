@@ -74,7 +74,7 @@ pub const HELP_PAGES: &[HelpPage] = &[
     y   Analyze          — show best move, do NOT play it
 
   ENGINE
-    g   go / think now
+    G   go / think now (Shift+G)
     s   stop thinking
 ",
     },
@@ -213,7 +213,7 @@ impl MoveInput {
             KeyCode::Char('n') if self.buffer.is_empty() => Some(InputAction::NewGame),
             KeyCode::Char('u') if self.buffer.is_empty() => Some(InputAction::Undo),
             KeyCode::Char('t') if self.buffer.is_empty() => Some(InputAction::Flip),
-            KeyCode::Char('g') if self.buffer.is_empty() => Some(InputAction::EngineGo),
+            KeyCode::Char('G') if self.buffer.is_empty() => Some(InputAction::EngineGo),
             KeyCode::Char('s') if self.buffer.is_empty() => Some(InputAction::Stop),
             KeyCode::Char('p') if self.buffer.is_empty() => Some(InputAction::ModePlayerVsPlayer),
             KeyCode::Char('w') if self.buffer.is_empty() => Some(InputAction::ModePlayerVsBotWhite),

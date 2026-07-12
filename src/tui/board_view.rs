@@ -30,8 +30,8 @@ fn square_bg(session: &EngineSession, sq: Square, file: u8, rank: u8) -> Color {
             bg = LAST_MOVE;
         }
     }
-    // Best-move hint is Analyze-only (`g`); never paint it during live play.
-    if matches!(session.mode(), super::session::PlayMode::Analyze) {
+    // Best-move hint is Analyze-only (Shift+G); never paint it during live play.
+    if session.show_engine_hints() {
         if let Some(best) = session.info().bestmove.as_deref() {
             if let Ok(bm) = super::session::resolve_player_move(session.board(), best) {
                 if sq == bm.from() || sq == bm.to() {

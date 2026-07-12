@@ -2,11 +2,12 @@
 //!
 //! Player input accepts one move: short algebraic (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
 
-use super::game::{AnalyzedGame, PlyRecord};
+use super::game::{AnalyzedGame, GameHeaders, PlyRecord};
+use super::san::format_san;
 use crate::board::Board;
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
-use crate::types::{Color, Move, Piece, PieceType, Square};
+use crate::types::{Color, Move, Piece, PieceType, Square, Value};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,6 +40,18 @@ pub enum PlayMode {
 }
 
 impl PlayMode {
+    pub const ALL: [PlayMode; 5] = [
+        PlayMode::PlayerVsPlayer,
+        PlayMode::PlayerVsBot {
+            human: Color::White,
+        },
+        PlayMode::PlayerVsBot {
+            human: Color::Black,
+        },
+        PlayMode::BotVsBot,
+        PlayMode::Analyze,
+    ];
+
     pub fn title(self) -> &'static str {
         match self {
             PlayMode::PlayerVsPlayer => "Player vs Player",
@@ -68,10 +81,21 @@ impl PlayMode {
     }
 }
 
+/// Per-iteration search stats shared from the worker thread.
+#[derive(Clone, Debug, Default)]
+struct LiveInfoSnapshot {
+    depth: u32,
+    score_cp: i32,
+    nodes: u64,
+    time: Duration,
+    pv: String,
+}
+
 /// Background search job started by [`EngineSession::go`].
 struct LiveSearch {
     stop: Arc<AtomicBool>,
     result: Arc<Mutex<Option<SearchResult>>>,
+    live_info: Arc<Mutex<LiveInfoSnapshot>>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -80,7 +104,7 @@ pub struct EngineSession {
     /// Moves applied this game (for undo via [`Board::unmake`]).
     move_stack: Vec<Move>,
     last_move: Option<Move>,
-    mode: PlayMode,
+    mode: Option<PlayMode>,
     flipped: bool,
     info: SearchInfo,
     go_started: Option<Instant>,
@@ -95,9 +119,11 @@ pub struct EngineSession {
     /// Position changed since `live_eval_cp` was computed for the current board.
     live_eval_stale: bool,
     status: String,
-    /// Imported game for ply-by-ply browse (Analyze mode).
+    /// Live or imported game transcript for the move panel.
     analyzed: Option<AnalyzedGame>,
-    /// User forced the eval bar on (also shown automatically while browsing an imported game).
+    /// True after [`Self::load_analyzed_game`] until a fresh game/FEN is loaded.
+    imported_game: bool,
+    /// User forced the eval bar on (also shown automatically for imported games).
     eval_bar_forced: bool,
     /// Active engine search, if any.
     live: Option<LiveSearch>,
@@ -116,14 +142,13 @@ impl EngineSession {
         Self::new_with_config(&crate::config::Config::default())
     }
 
-    /// Seed mode / flip / eval bar from user config.
+    /// Seed flip / eval bar from user config; mode stays unset until the user picks one.
     pub fn new_with_config(config: &crate::config::Config) -> Self {
-        let mode = config.tui.default_mode.to_play_mode();
         Self {
             board: Board::startpos(),
             move_stack: Vec::new(),
             last_move: None,
-            mode,
+            mode: None,
             flipped: config.tui.flip_board,
             info: SearchInfo::default(),
             go_started: None,
@@ -133,12 +158,9 @@ impl EngineSession {
             search_stm: None,
             live_eval_cp: Some(0),
             live_eval_stale: false,
-            status: format!(
-                "{} — {} · , settings · ? help",
-                mode.title(),
-                mode.blurb()
-            ),
-            analyzed: None,
+            status: "Choose a game mode to start".into(),
+            analyzed: Some(empty_analyzed(Board::startpos().to_fen())),
+            imported_game: false,
             eval_bar_forced: config.tui.show_eval_bar,
             live: None,
         }
@@ -146,9 +168,11 @@ impl EngineSession {
 
     /// Apply common TUI fields from config without resetting the board.
     pub fn apply_tui_config(&mut self, config: &crate::config::Config) {
-        let mode = config.tui.default_mode.to_play_mode();
-        if self.mode != mode {
-            self.set_mode(mode);
+        if let Some(current) = self.mode {
+            let mode = config.tui.default_mode.to_play_mode();
+            if current != mode {
+                self.set_mode(mode);
+            }
         }
         self.flipped = config.tui.flip_board;
         self.eval_bar_forced = config.tui.show_eval_bar;
@@ -207,11 +231,16 @@ impl EngineSession {
 
     /// Show eval bar when browsing an imported game, or when the user toggled it on.
     pub fn show_eval_bar(&self) -> bool {
-        self.eval_bar_forced || self.analyzed.is_some()
+        self.eval_bar_forced || self.imported_game
+    }
+
+    /// True while the current transcript came from an import.
+    pub fn imported_game(&self) -> bool {
+        self.imported_game
     }
 
     pub fn toggle_eval_bar(&mut self) {
-        if self.analyzed.is_some() {
+        if self.imported_game {
             self.status = "Eval bar stays on while browsing an imported game".into();
             return;
         }
@@ -230,13 +259,22 @@ impl EngineSession {
         self.live_eval_stale
     }
 
-    pub fn mode(&self) -> PlayMode {
+    pub fn mode(&self) -> Option<PlayMode> {
         self.mode
+    }
+
+    pub fn mode_title(&self) -> &'static str {
+        self.mode.map(PlayMode::title).unwrap_or("Choose a mode")
+    }
+
+    /// True when the user must pick a play mode before starting.
+    pub fn needs_mode_picker(&self) -> bool {
+        self.mode.is_none() && !self.imported_game
     }
 
     pub fn set_mode(&mut self, mode: PlayMode) {
         self.stop_thinking_quiet();
-        self.mode = mode;
+        self.mode = Some(mode);
         self.flipped = matches!(
             mode,
             PlayMode::PlayerVsBot {
@@ -257,22 +295,24 @@ impl EngineSession {
 
     pub fn is_human_turn(&self) -> bool {
         match self.mode {
-            PlayMode::PlayerVsPlayer | PlayMode::Analyze => true,
-            PlayMode::PlayerVsBot { human } => self.board.side_to_move() == human,
-            PlayMode::BotVsBot => false,
+            None => false,
+            Some(PlayMode::PlayerVsPlayer | PlayMode::Analyze) => true,
+            Some(PlayMode::PlayerVsBot { human }) => self.board.side_to_move() == human,
+            Some(PlayMode::BotVsBot) => false,
         }
     }
 
     pub fn engine_should_auto_move(&self) -> bool {
         match self.mode {
-            PlayMode::PlayerVsPlayer | PlayMode::Analyze => false,
-            PlayMode::PlayerVsBot { human } => self.board.side_to_move() != human,
-            PlayMode::BotVsBot => true,
+            None => false,
+            Some(PlayMode::PlayerVsPlayer | PlayMode::Analyze) => false,
+            Some(PlayMode::PlayerVsBot { human }) => self.board.side_to_move() != human,
+            Some(PlayMode::BotVsBot) => true,
         }
     }
 
     pub fn search_applies_move(&self) -> bool {
-        !matches!(self.mode, PlayMode::Analyze)
+        !matches!(self.mode, Some(PlayMode::Analyze))
     }
 
     pub fn analyzed(&self) -> Option<&AnalyzedGame> {
@@ -280,39 +320,57 @@ impl EngineSession {
     }
 
     /// White-relative eval for the eval bar (`None` = no analysis yet).
+    ///
+    /// While a search is in progress, prefers the live search score so the bar
+    /// and numeric overlay update during thinking.
     pub fn current_eval(&self) -> Option<i32> {
-        if let Some(g) = self.analyzed.as_ref() {
-            return g.current_eval();
+        if let Some(ev) = self.analyzed.as_ref().and_then(|g| g.current_eval()) {
+            return Some(ev);
+        }
+        if self.info.thinking {
+            if let Some(stm) = self.search_stm {
+                if self.info.depth > 0 || self.info.nodes > 0 {
+                    return Some(stm_score_to_white(self.info.score_cp, stm));
+                }
+            }
         }
         self.live_eval_cp
     }
 
+    /// PV / best-move hints are Analyze-only (never during live play vs bot).
+    pub fn show_engine_hints(&self) -> bool {
+        matches!(self.mode, Some(PlayMode::Analyze))
+    }
+
     pub fn new_game(&mut self) {
         self.stop_thinking_quiet();
-        self.analyzed = None;
         self.board = Board::startpos();
         self.move_stack.clear();
         self.last_move = None;
+        self.mode = None;
+        self.analyzed = Some(empty_analyzed(self.board.to_fen()));
+        self.imported_game = false;
         self.info = SearchInfo::default();
         self.live_eval_cp = Some(0);
         self.live_eval_stale = false;
         self.search_stm = None;
         self.eval_only = false;
-        self.status = format!("New game · {}", self.mode.title());
+        self.status = "Choose a game mode to start".into();
     }
 
     pub fn load_fen(&mut self, fen: &str) -> Result<(), String> {
         self.stop_thinking_quiet();
-        self.analyzed = None;
         self.board = Board::from_fen(fen).map_err(|e| e.to_string())?;
         self.move_stack.clear();
         self.last_move = None;
+        self.analyzed = Some(empty_analyzed(self.board.to_fen()));
+        self.imported_game = false;
         self.info = SearchInfo::default();
         self.live_eval_cp = None;
         self.live_eval_stale = true;
         self.search_stm = None;
         self.eval_only = false;
-        self.status = format!("Loaded FEN · {}", self.mode.title());
+        self.status = format!("Loaded FEN · {}", self.mode_title());
         Ok(())
     }
 
@@ -323,8 +381,11 @@ impl EngineSession {
         self.sync_from_game(&game)?;
         let n = game.ply_count();
         self.analyzed = Some(game);
-        self.mode = PlayMode::Analyze;
+        self.imported_game = true;
+        self.mode = Some(PlayMode::Analyze);
         self.info = SearchInfo::default();
+        self.live_eval_cp = None;
+        self.live_eval_stale = false;
         self.status = format!("Imported {n} plies · ←/→ step · Analyze");
         Ok(())
     }
@@ -334,7 +395,7 @@ impl EngineSession {
             self.play_text(tok)
                 .map_err(|e| format!("move {} ({tok}): {e}", i + 1))?;
         }
-        self.status = format!("Applied moves · {}", self.mode.title());
+        self.status = format!("Applied moves · {}", self.mode_title());
         Ok(())
     }
 
@@ -428,8 +489,36 @@ impl EngineSession {
     }
 
     pub fn undo(&mut self) -> bool {
-        if self.analyzed.is_some() {
-            return self.step_back();
+        if let Some(game) = self.analyzed.as_ref() {
+            if game.cursor < game.plies.len() {
+                // Mid-browse: step the cursor without deleting plies.
+                return self.step_back();
+            }
+            if game.plies.is_empty() {
+                self.status = "Nothing to undo".into();
+                return false;
+            }
+            let mut game = self.analyzed.take().unwrap();
+            game.plies.pop();
+            game.cursor = game.plies.len();
+            return match self.sync_from_game(&game) {
+                Ok(()) => {
+                    self.analyzed = Some(game);
+                    self.stop_thinking_quiet();
+                    self.live_eval_stale = true;
+                    if self.move_stack.is_empty() {
+                        self.live_eval_cp = Some(0);
+                        self.live_eval_stale = false;
+                    }
+                    self.status = "Undid last move".into();
+                    true
+                }
+                Err(e) => {
+                    self.analyzed = Some(game);
+                    self.status = e;
+                    false
+                }
+            };
         }
         if let Some(m) = self.move_stack.pop() {
             self.board.unmake(m);
@@ -464,13 +553,23 @@ impl EngineSession {
 
     /// Play a single player move: SAN (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
     pub fn play_text(&mut self, text: &str) -> Result<(), String> {
+        if self.mode.is_none() {
+            return Err("Choose a game mode first".into());
+        }
         let mv = resolve_player_move(&self.board, text)?;
         self.play_move(mv)
     }
 
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
-        // Playing leaves browse mode; imported transcript is cleared.
-        self.analyzed = None;
+        self.ensure_analyzed();
+        let san = format_san(&self.board, mv);
+        if let Some(game) = self.analyzed.as_mut() {
+            if game.cursor < game.plies.len() {
+                game.plies.truncate(game.cursor);
+            }
+            game.plies.push(PlyRecord::new(mv, san));
+            game.cursor = game.plies.len();
+        }
         // Legality already checked for player input; bot picks from legal_moves.
         self.board.make(mv);
         self.move_stack.push(mv);
@@ -480,7 +579,17 @@ impl EngineSession {
         Ok(())
     }
 
+    fn ensure_analyzed(&mut self) {
+        if self.analyzed.is_none() {
+            self.analyzed = Some(empty_analyzed(self.board.to_fen()));
+        }
+    }
+
     pub fn go(&mut self, limits: GoLimits) {
+        if self.mode.is_none() {
+            self.status = "Choose a game mode first".into();
+            return;
+        }
         self.start_search(limits, /*eval_only=*/ false);
     }
 
@@ -543,12 +652,30 @@ impl EngineSession {
         let mut board = self.board.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let result = Arc::new(Mutex::new(None));
+        let live_info = Arc::new(Mutex::new(LiveInfoSnapshot::default()));
         let stop_t = Arc::clone(&stop);
         let result_t = Arc::clone(&result);
+        let live_info_t = Arc::clone(&live_info);
 
         let handle = std::thread::spawn(move || {
             let mut tt = TranspositionTable::new(16);
-            let out = search::go(&mut board, search_limits, &mut tt, &stop_t, None);
+            let mut on_info =
+                |depth: i32, score: Value, nodes: u64, time: Duration, pv: &str| {
+                    if let Ok(mut snap) = live_info_t.lock() {
+                        snap.depth = depth.max(0) as u32;
+                        snap.score_cp = score;
+                        snap.nodes = nodes;
+                        snap.time = time;
+                        snap.pv = pv.to_string();
+                    }
+                };
+            let out = search::go(
+                &mut board,
+                search_limits,
+                &mut tt,
+                &stop_t,
+                Some(&mut on_info),
+            );
             if let Ok(mut slot) = result_t.lock() {
                 *slot = Some(out);
             }
@@ -557,6 +684,7 @@ impl EngineSession {
         self.live = Some(LiveSearch {
             stop,
             result,
+            live_info,
             handle: Some(handle),
         });
     }
@@ -578,6 +706,22 @@ impl EngineSession {
             return;
         };
         self.info.time = started.elapsed();
+
+        if let Some(live) = self.live.as_ref() {
+            if let Ok(snap) = live.live_info.lock() {
+                if snap.depth > 0 || snap.nodes > 0 || !snap.pv.is_empty() {
+                    self.info.depth = snap.depth;
+                    self.info.score_cp = snap.score_cp;
+                    self.info.nodes = snap.nodes;
+                    // Never stream PV during bot play or quiet eval refreshes.
+                    if self.show_engine_hints() && !self.eval_only {
+                        self.info.pv = snap.pv.clone();
+                    } else {
+                        self.info.pv.clear();
+                    }
+                }
+            }
+        }
 
         let ready = self
             .live
@@ -633,12 +777,17 @@ impl EngineSession {
         self.info.score_cp = result.score;
         self.info.nodes = result.nodes;
         self.info.time = result.time;
-        self.info.pv = result
-            .pv
-            .iter()
-            .map(|m| m.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
+        // Keep PV only when Analyze hints are allowed (not bot play / eval-only).
+        if self.show_engine_hints() && !eval_only && !apply {
+            self.info.pv = result
+                .pv
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+        } else {
+            self.info.pv.clear();
+        }
 
         if result.best_move.is_none() {
             self.live_eval_stale = false;
@@ -680,6 +829,10 @@ impl Default for EngineSession {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn empty_analyzed(start_fen: String) -> AnalyzedGame {
+    AnalyzedGame::new(start_fen, Vec::new(), GameHeaders::default())
 }
 
 /// Resolve one player move: UCI or simple SAN against legal moves.
@@ -893,6 +1046,33 @@ mod tests {
     }
 
     #[test]
+    fn new_session_starts_without_mode() {
+        let s = EngineSession::new();
+        assert_eq!(s.mode(), None);
+        assert!(s.needs_mode_picker());
+    }
+
+    #[test]
+    fn new_game_clears_mode() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
+        s.play_text("e4").unwrap();
+        s.new_game();
+        assert_eq!(s.mode(), None);
+        assert!(s.needs_mode_picker());
+        assert!(s.move_stack.is_empty());
+    }
+
+    #[test]
+    fn play_text_requires_mode() {
+        let mut s = EngineSession::new();
+        assert_eq!(
+            s.play_text("e4").unwrap_err(),
+            "Choose a game mode first"
+        );
+    }
+
+    #[test]
     fn new_game_live_eval_starts_at_zero() {
         let s = EngineSession::new();
         assert_eq!(s.current_eval(), Some(0));
@@ -900,15 +1080,59 @@ mod tests {
     }
 
     #[test]
+    fn engine_hints_only_in_analyze_mode() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsBot {
+            human: Color::White,
+        });
+        assert!(!s.show_engine_hints());
+        s.set_mode(PlayMode::BotVsBot);
+        assert!(!s.show_engine_hints());
+        s.set_mode(PlayMode::PlayerVsPlayer);
+        assert!(!s.show_engine_hints());
+        s.set_mode(PlayMode::Analyze);
+        assert!(s.show_engine_hints());
+    }
+
+    #[test]
     fn play_move_marks_live_eval_stale() {
         let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
         s.play_text("e4").unwrap();
         assert!(s.live_eval_stale());
     }
 
     #[test]
+    fn live_play_appends_to_move_panel() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
+        s.play_text("e4").unwrap();
+        s.play_text("e5").unwrap();
+        let game = s.analyzed().unwrap();
+        assert_eq!(game.plies.len(), 2);
+        assert_eq!(game.cursor, 2);
+        assert_eq!(game.plies[0].san, "e4");
+        assert_eq!(game.plies[1].san, "e5");
+    }
+
+    #[test]
+    fn undo_at_tip_truncates_transcript() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
+        s.play_text("e4").unwrap();
+        s.play_text("e5").unwrap();
+        assert!(s.undo());
+        let game = s.analyzed().unwrap();
+        assert_eq!(game.plies.len(), 1);
+        assert_eq!(game.cursor, 1);
+        assert_eq!(game.plies[0].san, "e4");
+        assert_eq!(s.side_to_move(), Color::Black);
+    }
+
+    #[test]
     fn accepts_short_pawn_move() {
         let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
         s.play_text("e4").unwrap();
         assert_eq!(s.side_to_move(), Color::Black);
         assert_eq!(
@@ -920,6 +1144,7 @@ mod tests {
     #[test]
     fn accepts_uci_still() {
         let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
         s.play_text("e2e4").unwrap();
         assert_eq!(s.side_to_move(), Color::Black);
     }
@@ -951,7 +1176,7 @@ mod tests {
         let mut s = EngineSession::new();
         s.load_analyzed_game(game).unwrap();
         assert_eq!(s.analyzed().unwrap().cursor, 4);
-        assert_eq!(s.mode(), PlayMode::Analyze);
+        assert_eq!(s.mode(), Some(PlayMode::Analyze));
         assert!(s.current_eval().is_none());
 
         assert!(s.step_back());

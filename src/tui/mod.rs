@@ -9,7 +9,9 @@ mod game;
 mod game_picker;
 mod import;
 mod input;
+mod mode_picker;
 mod move_list;
+mod san;
 mod settings;
 pub mod session;
 
@@ -22,6 +24,7 @@ use crossterm::terminal::{
 };
 use import::ImportResult;
 use input::{InputAction, MoveInput, PromptKind, HELP_PAGES};
+use mode_picker::{ModePickerOverlay, PickerAction};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use session::{EngineSession, PlayMode};
@@ -71,9 +74,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
     let mut help_page: usize = 0;
     let mut show_settings = false;
     let mut settings = SettingsOverlay::default();
+    let mut mode_picker = ModePickerOverlay::new(&config);
     #[cfg(feature = "chesscom")]
     let mut game_picker: Option<game_picker::GamePicker> = None;
-    maybe_start_engine(&mut session, &config);
     maybe_refresh_live_eval(&mut session, &config);
 
     loop {
@@ -88,6 +91,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 &config,
                 show_help.then_some(help_page),
                 show_settings.then_some(&settings),
+                session.needs_mode_picker().then_some(&mode_picker),
                 #[cfg(feature = "chesscom")]
                 game_picker.as_ref(),
             )
@@ -107,7 +111,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             match key.code {
                 KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                     show_help = false;
-                    session.set_status(format!("{} — press ? for help", session.mode().title()));
+                    session.set_status(if session.needs_mode_picker() {
+                        "Choose a game mode to start".into()
+                    } else {
+                        format!("{} — press ? for help", session.mode_title())
+                    });
                 }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('[') => {
                     if help_page == 0 {
@@ -130,10 +138,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             match key.code {
                 KeyCode::Char(',') | KeyCode::Esc => {
                     show_settings = false;
-                    session.set_status(format!(
-                        "{} — , settings · ? help",
-                        session.mode().title()
-                    ));
+                    session.set_status(if session.needs_mode_picker() {
+                        "Choose a game mode to start".into()
+                    } else {
+                        format!("{} — , settings · ? help", session.mode_title())
+                    });
                 }
                 code => {
                     if settings.handle_key(code, &mut config) {
@@ -142,6 +151,43 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 }
             }
             continue;
+        }
+
+        if session.needs_mode_picker() && input.prompt() == PromptKind::Move {
+            if let Some(action) = mode_picker.handle_key(key.code) {
+                match action {
+                    PickerAction::Confirm(mode) => {
+                        confirm_mode(&mut session, &mut config, mode);
+                    }
+                    PickerAction::Navigate => {}
+                    PickerAction::Quit => break,
+                    PickerAction::OpenHelp => {
+                        show_help = true;
+                        help_page = 0;
+                        session.set_status(help_status(help_page));
+                    }
+                    PickerAction::OpenSettings => {
+                        show_settings = true;
+                        settings = SettingsOverlay::default();
+                        session.set_status("Settings — Esc/, to close");
+                    }
+                    PickerAction::StartImport => {
+                        #[cfg(feature = "chesscom")]
+                        {
+                            game_picker = None;
+                        }
+                        input.start_import();
+                        session.set_status(
+                            "Import FEN / PGN / URL / username / file — Enter · Esc cancel",
+                        );
+                    }
+                    PickerAction::NewGame => {
+                        session.new_game();
+                        mode_picker = ModePickerOverlay::new(&config);
+                    }
+                }
+                continue;
+            }
         }
 
         let importing = input.prompt() == PromptKind::Import;
@@ -163,7 +209,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             }
             InputAction::NewGame => {
                 session.new_game();
-                maybe_start_engine(&mut session, &config);
+                mode_picker = ModePickerOverlay::new(&config);
             }
             InputAction::Undo => {
                 let _ = session.undo();
@@ -175,7 +221,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             }
             InputAction::ToggleEvalBar => {
                 session.toggle_eval_bar();
-                if session.analyzed().is_none() {
+                if !session.imported_game() {
                     config.tui.show_eval_bar = session.eval_bar_forced();
                     let _ = config.save();
                 }
@@ -187,31 +233,31 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             }
             InputAction::Stop => session.stop(),
             InputAction::ModePlayerVsPlayer => {
-                session.set_mode(PlayMode::PlayerVsPlayer);
-                sync_mode_to_config(&mut config, &session);
+                confirm_mode(&mut session, &mut config, PlayMode::PlayerVsPlayer);
             }
             InputAction::ModePlayerVsBotWhite => {
-                session.set_mode(PlayMode::PlayerVsBot {
-                    human: Side::White,
-                });
-                sync_mode_to_config(&mut config, &session);
-                maybe_start_engine(&mut session, &config);
+                confirm_mode(
+                    &mut session,
+                    &mut config,
+                    PlayMode::PlayerVsBot {
+                        human: Side::White,
+                    },
+                );
             }
             InputAction::ModePlayerVsBotBlack => {
-                session.set_mode(PlayMode::PlayerVsBot {
-                    human: Side::Black,
-                });
-                sync_mode_to_config(&mut config, &session);
-                maybe_start_engine(&mut session, &config);
+                confirm_mode(
+                    &mut session,
+                    &mut config,
+                    PlayMode::PlayerVsBot {
+                        human: Side::Black,
+                    },
+                );
             }
             InputAction::ModeBotVsBot => {
-                session.set_mode(PlayMode::BotVsBot);
-                sync_mode_to_config(&mut config, &session);
-                maybe_start_engine(&mut session, &config);
+                confirm_mode(&mut session, &mut config, PlayMode::BotVsBot);
             }
             InputAction::ModeAnalyze => {
-                session.set_mode(PlayMode::Analyze);
-                sync_mode_to_config(&mut config, &session);
+                confirm_mode(&mut session, &mut config, PlayMode::Analyze);
             }
             InputAction::StartImport => {
                 #[cfg(feature = "chesscom")]
@@ -307,6 +353,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             &config,
                             show_help.then_some(help_page),
                             show_settings.then_some(&settings),
+                            session.needs_mode_picker().then_some(&mode_picker),
                             game_picker.as_ref(),
                         )
                     })?;
@@ -344,6 +391,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             &config,
                             show_help.then_some(help_page),
                             show_settings.then_some(&settings),
+                            session.needs_mode_picker().then_some(&mode_picker),
                             #[cfg(feature = "chesscom")]
                             game_picker.as_ref(),
                         )
@@ -379,9 +427,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             session.set_status(e);
                         }
                     }
+                } else if session.mode().is_none() {
+                    session.set_status("Choose a game mode first");
                 } else if session.is_thinking() {
                     session.set_status("Wait for engine (or s to stop)");
-                } else if matches!(session.mode(), PlayMode::BotVsBot) {
+                } else if matches!(session.mode(), Some(PlayMode::BotVsBot)) {
                     session.set_status("Bot vs Bot: bots move automatically");
                 } else if !session.is_human_turn() {
                     session.set_status("Not your turn — wait for bot");
@@ -398,10 +448,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
     Ok(())
 }
 
+fn confirm_mode(session: &mut EngineSession, config: &mut Config, mode: PlayMode) {
+    session.set_mode(mode);
+    sync_mode_to_config(config, session);
+    maybe_start_engine(session, config);
+}
+
 fn sync_mode_to_config(config: &mut Config, session: &EngineSession) {
-    config.tui.default_mode = DefaultPlayMode::from_play_mode(session.mode());
-    config.tui.flip_board = session.flipped();
-    let _ = config.save();
+    if let Some(mode) = session.mode() {
+        config.tui.default_mode = DefaultPlayMode::from_play_mode(mode);
+        config.tui.flip_board = session.flipped();
+        let _ = config.save();
+    }
 }
 
 fn persist_and_apply(config: &mut Config, session: &mut EngineSession) {
@@ -440,7 +498,7 @@ fn maybe_refresh_live_eval(session: &mut EngineSession, config: &Config) {
         || !session.show_eval_bar()
         || !session.live_eval_stale()
         || session.engine_should_auto_move()
-        || session.analyzed().is_some()
+        || session.imported_game()
     {
         return;
     }
@@ -454,6 +512,7 @@ fn draw(
     config: &Config,
     help_page: Option<usize>,
     settings_overlay: Option<&SettingsOverlay>,
+    mode_picker_overlay: Option<&ModePickerOverlay>,
     #[cfg(feature = "chesscom")] picker: Option<&game_picker::GamePicker>,
 ) {
     let area = frame.area();
@@ -470,7 +529,7 @@ fn draw(
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(5),
+                Constraint::Length(8),
                 Constraint::Percentage(55),
                 Constraint::Percentage(45),
             ])
@@ -493,12 +552,13 @@ fn draw(
 
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(6)])
+        .constraints([Constraint::Min(6), Constraint::Length(9)])
         .split(right_area);
     move_list::render(frame, right[0], session);
     engine_panel::render(frame, right[1], session, config);
 
     let title = match input.prompt() {
+        PromptKind::Move if session.needs_mode_picker() => " Choose mode ",
         PromptKind::Move => " Your move (e4 or e2e4) ",
         PromptKind::Import => " Import ",
         #[cfg(feature = "chesscom")]
@@ -562,5 +622,9 @@ fn draw(
 
     if let Some(overlay) = settings_overlay {
         settings::render(frame, area, config, overlay);
+    }
+
+    if let Some(overlay) = mode_picker_overlay {
+        mode_picker::render(frame, area, overlay);
     }
 }
