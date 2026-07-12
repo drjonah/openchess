@@ -5,7 +5,10 @@ mod movegen;
 mod parser;
 mod see;
 
-use crate::types::{zobrist, Bitboard, CastlingRights, Color, Key, Piece, PieceType, Square};
+use crate::types::score::piece_value;
+use crate::types::{
+    zobrist, Bitboard, CastlingRights, Color, Key, Piece, PieceType, Square, Value,
+};
 use std::fmt;
 
 pub use makemove::{BoardObserver, StateInfo};
@@ -270,6 +273,23 @@ impl Board {
         (self.pieces(PieceType::King) & self.pieces_color(color))
             .lsb()
             .expect("king not found")
+    }
+
+    /// Non-pawn material for `color` (knights + bishops + rooks + queens).
+    ///
+    /// Used as a simple zugzwang gate for null-move pruning.
+    pub fn non_pawn_material(&self, color: Color) -> Value {
+        let us = self.pieces_color(color);
+        let mut sum = 0;
+        for &pt in &[
+            PieceType::Knight,
+            PieceType::Bishop,
+            PieceType::Rook,
+            PieceType::Queen,
+        ] {
+            sum += piece_value(pt) * (self.pieces(pt) & us).count() as Value;
+        }
+        sum
     }
 
     /// Whether `sq` is attacked by any piece of color `by`.

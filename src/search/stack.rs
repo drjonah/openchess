@@ -11,7 +11,7 @@ pub struct Stack {
     pub static_eval: Value,
     pub move_count: i32,
     pub current_move: Move,
-    /// Killer move slots (filled by P3-03 later).
+    /// Killer move slots (updated on quiet cutoffs; P3-03).
     pub killers: [Move; 2],
     /// PV line starting at this ply.
     pub pv: Vec<Move>,

@@ -230,3 +230,52 @@ fn incremental_key_matches_rehash_after_thousand_random_plies() {
     assert_eq!(board, snapshot);
     assert_eq!(board.history_len(), 0);
 }
+
+#[test]
+fn do_null_undo_null_round_trips_startpos() {
+    init();
+    let snapshot = Board::startpos();
+    let mut board = Board::startpos();
+
+    board.do_null();
+    assert_eq!(board.side_to_move(), Color::Black);
+    assert_eq!(board.halfmove_clock(), 1);
+    assert!(board.ep_square().is_none());
+    assert_eq!(board.key(), board.compute_key());
+    assert_eq!(board.history_len(), 1);
+
+    board.undo_null();
+    assert_eq!(board, snapshot);
+    assert_eq!(board.key(), snapshot.key());
+    assert_eq!(board.history_len(), 0);
+}
+
+#[test]
+fn do_null_clears_ep_and_restores_on_undo() {
+    init();
+    let mut board = Board::startpos();
+    board.make(mv("e2", "e4"));
+    assert_eq!(board.ep_square(), Some(sq("e3")));
+    let snapshot = board.clone();
+
+    board.do_null();
+    assert!(board.ep_square().is_none());
+    assert_eq!(board.side_to_move(), Color::White);
+    assert_eq!(board.key(), board.compute_key());
+
+    board.undo_null();
+    assert_eq!(board, snapshot);
+    assert_eq!(board.ep_square(), Some(sq("e3")));
+}
+
+#[test]
+fn non_pawn_material_startpos_and_bare_kp() {
+    init();
+    let start = Board::startpos();
+    assert!(start.non_pawn_material(Color::White) > 0);
+    assert!(start.non_pawn_material(Color::Black) > 0);
+
+    let kp = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
+    assert_eq!(kp.non_pawn_material(Color::White), 0);
+    assert_eq!(kp.non_pawn_material(Color::Black), 0);
+}

@@ -266,12 +266,13 @@ flowchart TB
   - **Research:** reckless §6.5 stages · stockfish `MovePicker` stages  
   - **Note:** `Main` / `Qsearch` / `Evasion` picker kinds landed.
 
-- [ ] **P3-03** — Killers + quiet history (butterfly)  
+- [x] **P3-03** — Killers + quiet history (butterfly)  
   - **Deps:** P3-02, P2-04  
   - **Parallel-ok:** P2-06, P5-01  
   - **Deliverable:** Killer slots per ply; history updates on quiet cutoffs; history-ordered quiets  
   - **Acceptance:** After a quiet cutoff, same quiet ranks higher on revisit  
-  - **Research:** chesswiki History heuristic · stockfish `history.h`
+  - **Research:** chesswiki History heuristic · stockfish `history.h`  
+  - **Note:** Butterfly `[Color][from][to]` with gravity; killers scored inside quiet stage.
 
 - [ ] **P3-04** — Capture / continuation / pawn history  
   - **Deps:** P3-03  
@@ -321,19 +322,21 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P5-00** — Improving flag  
+- [x] **P5-00** — Improving flag  
   - **Deps:** P2-04, P6-01  
   - **Parallel-ok:** P5-01  
   - **Deliverable:** `improving` when static eval better than ~2 plies ago; exposed to prune/reduce margins  
   - **Acceptance:** Flag true/false on constructed eval sequences  
-  - **Research:** reckless/stockfish “improving”
+  - **Research:** reckless/stockfish “improving”  
+  - **Note:** `selectivity::is_improving`; wired into αβ before forward-prune hook.
 
-- [ ] **P5-01** — Null move pruning (NMP)  
+- [x] **P5-01** — Null move pruning (NMP)  
   - **Deps:** P2-06, P3-02, P4-02, P5-00  
   - **Parallel-ok:** P6-03 (not another prune)  
   - **Deliverable:** Null move + reduced search; disable in check / obvious zugzwang; verification as desired  
   - **Acceptance:** Fixed-depth bench nodes drop vs no-NMP; no illegal null in check; tactical suite smoke OK  
-  - **Research:** chesswiki NMP · reckless catalog
+  - **Research:** chesswiki NMP · reckless catalog  
+  - **Note:** `Board::do_null`/`undo_null`; NonPV scout via `selectivity::try_null_move`; no verification.
 
 - [ ] **P5-02** — Late move reductions (LMR)  
   - **Deps:** P5-01, P3-03  

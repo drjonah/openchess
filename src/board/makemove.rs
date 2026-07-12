@@ -298,4 +298,59 @@ impl Board {
             observer.on_unmake(self, m);
         }
     }
+
+    /// Pass the turn without moving a piece (null move for NMP).
+    ///
+    /// Pushes a [`StateInfo`] snapshot; reverse with [`Self::undo_null`].
+    /// Clears en passant, increments the halfmove clock, flips the side to
+    /// move, and refreshes checkers/pins. Does not touch pieces or castling.
+    pub fn do_null(&mut self) {
+        let us = self.side_to_move;
+
+        let state = StateInfo {
+            castling: self.castling,
+            ep_square: self.ep_square,
+            halfmove_clock: self.halfmove_clock,
+            fullmove_number: self.fullmove_number,
+            captured: Piece::Empty,
+            key: self.key,
+            checkers: self.checkers,
+            pinned: self.pinned,
+            pinners: self.pinners,
+        };
+
+        if let Some(old_ep) = self.ep_square {
+            self.key ^= zobrist::ep_key(old_ep.file());
+            self.ep_square = None;
+        }
+
+        self.halfmove_clock += 1;
+
+        if us == Color::Black {
+            self.fullmove_number += 1;
+        }
+
+        self.side_to_move = !us;
+        self.key ^= zobrist::side_key();
+        self.refresh_checkers_and_pins();
+        self.history.push(state);
+    }
+
+    /// Reverse the most recent [`Self::do_null`].
+    pub fn undo_null(&mut self) {
+        let state = self
+            .history
+            .pop()
+            .expect("undo_null called with an empty state stack");
+
+        self.castling = state.castling;
+        self.ep_square = state.ep_square;
+        self.halfmove_clock = state.halfmove_clock;
+        self.fullmove_number = state.fullmove_number;
+        self.key = state.key;
+        self.checkers = state.checkers;
+        self.pinned = state.pinned;
+        self.pinners = state.pinners;
+        self.side_to_move = !self.side_to_move;
+    }
 }

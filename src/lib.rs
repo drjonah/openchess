@@ -3,6 +3,7 @@
 pub mod board;
 pub mod config;
 pub mod eval;
+pub mod history;
 pub mod lookup;
 pub mod movepick;
 pub mod search;

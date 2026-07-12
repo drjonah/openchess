@@ -5,7 +5,8 @@ use super::stack::{Stack, MAX_PLY};
 use super::ThreadData;
 use crate::board::Board;
 use crate::eval;
-use crate::movepick::MovePicker;
+use crate::history::history_bonus;
+use crate::movepick::{is_quiet, MovePicker};
 use crate::transposition::{Bound, TranspositionTable};
 use crate::types::score::{mated_in, mate_in, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE};
 use crate::types::{Move, Value};
@@ -18,6 +19,8 @@ pub enum NodeType {
     Pv,
     NonPv,
 }
+
+const MAX_QUIETS_TRACKED: usize = 64;
 
 /// Fail-soft alpha-beta / PVS search.
 pub fn search(
@@ -88,12 +91,28 @@ pub fn search(
     };
     td.stack[ply].static_eval = static_eval;
 
-    let improving = ply >= 2
-        && !in_check
-        && static_eval > td.stack[ply - 2].static_eval;
+    let prev_eval = if ply >= 2 {
+        td.stack[ply - 2].static_eval
+    } else {
+        static_eval
+    };
+    let improving = ply >= 2 && selectivity::is_improving(static_eval, prev_eval, in_check);
 
-    // P5 forward-prune hook (no-op until selectivity lands).
+    // P5 forward pruning: NMP (live) + static hooks (RFP later).
     if node == NodeType::NonPv && !in_check {
+        if let Some(score) = selectivity::try_null_move(
+            board,
+            td,
+            tt,
+            stop,
+            ply,
+            depth,
+            beta,
+            static_eval,
+            improving,
+        ) {
+            return score;
+        }
         if let Some(score) =
             selectivity::forward_prune(board, depth, alpha, beta, static_eval, improving)
         {
@@ -105,15 +124,31 @@ pub fn search(
     let mut best_move = Move::NONE;
     let mut move_count = 0i32;
     let old_alpha = alpha;
+    let stm = board.side_to_move();
 
-    let mut picker = MovePicker::new(board, if tt_move.is_none() { None } else { Some(tt_move) });
+    let killers = td.stack[ply].killers;
+    let mut picker = MovePicker::new(
+        board,
+        if tt_move.is_none() {
+            None
+        } else {
+            Some(tt_move)
+        },
+        &td.history,
+        &killers,
+    );
+
+    let mut quiets_searched = [Move::NONE; MAX_QUIETS_TRACKED];
+    let mut quiet_count = 0usize;
 
     while let Some(mv) = picker.next() {
         move_count += 1;
         td.stack[ply].move_count = move_count;
         td.stack[ply].current_move = mv;
 
-        if selectivity::should_prune_move(move_count, depth, false) {
+        let quiet = is_quiet(board, mv);
+
+        if selectivity::should_prune_move(move_count, depth, quiet) {
             continue;
         }
 
@@ -192,9 +227,17 @@ pub fn search(
             if score > alpha {
                 alpha = score;
                 if alpha >= beta {
+                    if quiet {
+                        update_quiet_stats(td, ply, stm, mv, depth, &quiets_searched[..quiet_count]);
+                    }
                     break;
                 }
             }
+        }
+
+        if quiet && quiet_count < MAX_QUIETS_TRACKED {
+            quiets_searched[quiet_count] = mv;
+            quiet_count += 1;
         }
     }
 
@@ -219,6 +262,30 @@ pub fn search(
     tt.store(key, best_move, best_score, depth as i16, bound);
 
     best_score
+}
+
+/// Update killers + butterfly history on a quiet beta cutoff.
+fn update_quiet_stats(
+    td: &mut ThreadData,
+    ply: usize,
+    stm: crate::types::Color,
+    mv: Move,
+    depth: i32,
+    previous_quiets: &[Move],
+) {
+    let killers = &mut td.stack[ply].killers;
+    if killers[0] != mv {
+        killers[1] = killers[0];
+        killers[0] = mv;
+    }
+
+    let bonus = history_bonus(depth);
+    td.history.update(stm, mv, bonus);
+    for &q in previous_quiets {
+        if q != mv {
+            td.history.update(stm, q, -bonus);
+        }
+    }
 }
 
 /// Quiescence search: stand-pat + captures (P2-03).
@@ -290,8 +357,9 @@ pub fn qsearch(
     } else {
         Some(tt_move)
     };
+    let killers = td.stack[ply].killers;
     let mut picker = if in_check {
-        MovePicker::evasion(board, tt_move_opt)
+        MovePicker::evasion(board, tt_move_opt, &td.history, &killers)
     } else {
         MovePicker::qsearch(board, tt_move_opt)
     };

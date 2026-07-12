@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::board::Board;
+use crate::history::HistoryTables;
 use crate::transposition::TranspositionTable;
 use crate::types::score::VALUE_INFINITE;
 use crate::types::{Move, Value};
@@ -38,6 +39,7 @@ pub struct ThreadData {
     pub nodes: u64,
     pub stack: Vec<Stack>,
     pub root_moves: Vec<RootMove>,
+    pub history: HistoryTables,
 }
 
 impl ThreadData {
@@ -46,6 +48,7 @@ impl ThreadData {
             nodes: 0,
             stack: vec![Stack::default(); MAX_PLY],
             root_moves: Vec::new(),
+            history: HistoryTables::new(),
         }
     }
 }
@@ -229,6 +232,7 @@ pub fn go_depth(board: &mut Board, depth: i32) -> SearchResult {
 mod tests {
     use super::*;
     use crate::lookup;
+    use super::selectivity;
     use crate::types::{Color, Piece, Square};
     use std::str::FromStr;
     use std::sync::atomic::Ordering;
@@ -333,5 +337,70 @@ mod tests {
         // On quiet startpos, PV often reaches depth; allow >= 1 if cutoffs shorten.
         assert!(!result.pv.is_empty());
         assert_eq!(result.pv[0], result.best_move);
+    }
+
+    #[test]
+    fn nmp_reduces_nodes_at_fixed_depth() {
+        init();
+        let _guard = selectivity::NMP_TEST_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+
+        selectivity::NMP_ENABLED.store(false, Ordering::Relaxed);
+        let mut board_off = Board::startpos();
+        let mut tt_off = TranspositionTable::new(16);
+        let off = go(
+            &mut board_off,
+            Limits {
+                depth: Some(6),
+                ..Default::default()
+            },
+            &mut tt_off,
+            &stop,
+            None,
+        );
+
+        selectivity::NMP_ENABLED.store(true, Ordering::Relaxed);
+        let mut board_on = Board::startpos();
+        let mut tt_on = TranspositionTable::new(16);
+        let on = go(
+            &mut board_on,
+            Limits {
+                depth: Some(6),
+                ..Default::default()
+            },
+            &mut tt_on,
+            &stop,
+            None,
+        );
+
+        assert!(
+            on.nodes < off.nodes,
+            "NMP should reduce nodes: on={} off={}",
+            on.nodes,
+            off.nodes
+        );
+        assert!(!on.best_move.is_none());
+        assert!(board_on.legal_moves().contains(&on.best_move));
+    }
+
+    #[test]
+    fn nmp_inactive_in_check_still_legal() {
+        init();
+        // Rook check on the a-file; Black must resolve check (NMP must not fire).
+        let mut board = Board::from_fen("k7/8/8/8/8/8/8/R3K3 b - - 0 1").unwrap();
+        assert!(board.in_check());
+        let result = go_depth(&mut board, 4);
+        assert!(!result.best_move.is_none());
+        assert!(board.legal_moves().contains(&result.best_move));
+    }
+
+    #[test]
+    fn nmp_skipped_on_bare_kp_endgame() {
+        init();
+        let mut board = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
+        assert_eq!(board.non_pawn_material(Color::White), 0);
+        let result = go_depth(&mut board, 5);
+        assert!(!result.best_move.is_none());
+        assert!(board.legal_moves().contains(&result.best_move));
     }
 }
