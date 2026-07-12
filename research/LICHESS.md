@@ -1,7 +1,8 @@
 # Lichess Bot API — Integration Research
 
 > **Audience:** agents wiring OpenChess to play on Lichess (bot-vs-bot testing, live Elo feedback, regression games).
-> **Companion docs:** [ARCHITECTURE.md](../ARCHITECTURE.md) · [tasks.md](./tasks.md) · [chesswiki.md](./chesswiki.md) §6 (protocols)
+> **Companion docs:** [ARCHITECTURE.md](../ARCHITECTURE.md) · [chesswiki.md](./chesswiki.md) §6 (protocols)
+> **Agent task board:** [tasks.md](./tasks.md) — pillar **P9 Lichess** (P9-01..P9-07)
 > **Primary source:** [Lichess API reference — Bot](https://lichess.org/api#tag/bot/GET/api/stream/event) (OpenAPI v2.0.152)
 > **Reference client:** [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) (Python bridge; de-facto spec for edge cases)
 > **Rust client (optional dep):** [litchee](https://github.com/obazin/litchee) — async, full API coverage, NDJSON streaming
@@ -149,7 +150,31 @@ On connect, Lichess **replays all current challenges and active games** — hand
 
 Use `gameId` for all `/api/bot/game/{gameId}/...` calls. `fullId` is the player-specific URL id.
 
-### 6.3 Architecture sketch (from lichess-bot)
+**Clock units:** `gameStart.secondsLeft` is in **seconds** (rough snapshot). Per-move clocks in `gameState` use **milliseconds** (`wtime`, `btime`, `winc`, `binc`). Always convert `gameState` fields to `Duration::from_millis` for `time::TimeBudget`.
+
+### 6.3 Incoming `challenge` payload (high-signal fields)
+
+```json
+{
+  "type": "challenge",
+  "challenge": {
+    "id": "uGK4MHaQ",
+    "status": "created",
+    "speed": "rapid",
+    "rated": false,
+    "variant": { "key": "standard" },
+    "challenger": { "id": "bernstein-2ply", "name": "bernstein-2ply", "rating": 1262 },
+    "destUser": { "id": "openchess-bot", "name": "OpenChessBot" },
+    "timeControl": { "type": "clock", "limit": 300, "increment": 1, "show": "5+1" },
+    "color": "random",
+    "finalColor": "white"
+  }
+}
+```
+
+Filter on `variant`, `speed`, `rated`, and `timeControl` before `POST /api/challenge/{id}/accept`. On accept, expect `gameStart` with `gameId == challenge.id`.
+
+### 6.4 Architecture sketch (from lichess-bot)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -321,9 +346,19 @@ Practical dev norms:
 
 ## 11. OpenChess integration plan
 
+### 11.0 CLI only — no TUI
+
+Lichess bot mode is a **headless daemon**, not a terminal chess board.
+
+- Entry: `openchess lichess run` and `openchess lichess challenge <user>` — structured logs to stdout/stderr.
+- Watch games on lichess.org (Bot TV, live page) during development.
+- **Do not** add a Lichess panel to `tui/` unless we later want an optional read-only mirror; v1 is CLI-only.
+
+This matches [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) and keeps blocking HTTP streams out of the ratatui event loop.
+
 ### 11.1 Module layout (proposed)
 
-Mirror `chesscom/` — feature-gated HTTP client, no search logic inside.
+Mirror `chesscom/` — feature-gated HTTP client + CLI, no search logic inside, **no TUI**.
 
 ```
 src/
@@ -400,19 +435,19 @@ clock_increment = 1
 
 ---
 
-## 12. Phased tasks (suggested additions to tasks.md)
+## 12. Phased tasks
 
-| ID | Deps | Deliverable | Acceptance |
-|---|---|---|---|
-| **P9-01** | P1-09, P7-02 | `lichess/client.rs` — auth GET, NDJSON line reader | Parse sample `gameStart` fixture |
-| **P9-02** | P9-01 | Event loop skeleton | Connect stream; log challenges/games (dry-run) |
-| **P9-03** | P9-02, P2-02 | Single-game handler | Play one casual game to completion |
-| **P9-04** | P9-03 | Challenge filter + accept | Only accept `standard` + configured speeds |
-| **P9-05** | P9-03 | Outbound challenge | Challenge named bot; play game |
-| **P9-06** | P9-03 | PGN export + game log | Save `GET /game/export/{id}` after `gameFinish` |
-| **P9-07** | P9-02 | Reconnect + 429 backoff | Survive forced disconnect in manual test |
+Canonical checklist: [tasks.md § P9](./tasks.md#p9--lichess-bot-cli). Summary:
 
-**Parallel-ok with:** P7-03 (UCI options), P6 eval work — no search changes required for P9-01..02.
+| ID | Deliverable | Acceptance |
+|---|---|---|
+| **P9-01** | `lichess/client.rs` — auth GET, NDJSON line reader | Parse sample `gameStart` fixture |
+| **P9-02** | Event loop skeleton | Connect stream; log challenges/games (dry-run) |
+| **P9-03** | Single-game handler | Play one casual game to completion |
+| **P9-04** | Challenge filter + accept | Only accept `standard` + configured speeds |
+| **P9-05** | Outbound challenge | Challenge named bot; play game |
+| **P9-06** | PGN export + game log | Save `GET /game/export/{id}` after `gameFinish` |
+| **P9-07** | Reconnect + 429 backoff | Survive forced disconnect in manual test |
 
 ---
 

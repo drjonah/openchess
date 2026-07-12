@@ -3,7 +3,7 @@
 > **Language:** Rust  
 > **Paradigm:** Stockfish-family — bitboards + Lazy SMP alpha-beta (PVS) + selective search + incremental NNUE + shared TT + history/corrections + SPRT  
 > **Task board:** [research/tasks.md](research/tasks.md)  
-> **Research:** [research/chesswiki.md](research/chesswiki.md) · [research/reckless.md](research/reckless.md) · [research/stockfish.md](research/stockfish.md)
+> **Research:** [research/chesswiki.md](research/chesswiki.md) · [research/reckless.md](research/reckless.md) · [research/stockfish.md](research/stockfish.md) · [research/LICHESS.md](research/LICHESS.md) (P9)
 
 This document is the Rust-facing blueprint. Agents implement against [research/tasks.md](research/tasks.md); this file defines **where code lives**, **who owns what**, and **how data flows**.
 
@@ -39,7 +39,7 @@ openchess/
 ├── README.md
 ├── research/               # design research + tasks.md
 └── src/
-    ├── main.rs             # binary: init → `tui` subcommand or uci::message_loop()
+    ├── main.rs             # binary: init → `tui` | `lichess` | `uci` (default)
     ├── lib.rs              # module graph + public run()
     │
     ├── types/              # P1 — vocabulary
@@ -62,6 +62,7 @@ openchess/
     ├── lookup.rs           # P1 — magic/attack tables, init-once
     │
     ├── chesscom/           # default feature — fetch PGN by URL/username; `openchess chesscom` CLI + TUI import
+    ├── lichess/            # optional feature — Bot API daemon; `openchess lichess` CLI only (no TUI)
     │
     ├── search/             # P2 + P5 — brain
     │   ├── mod.rs          # iterative deepening entry
@@ -172,6 +173,7 @@ panic = "abort"
 | **P6 Eval** | `eval/` | HCE first; NNUE when search/testing solid |
 | **P7 UCI & time** | `uci`, `time` | No search logic inside `uci.rs` |
 | **P7b TUI** | `tui/` | Human UI only; shares session API with UCI; no search logic |
+| **P9 Lichess CLI** | `lichess/` | Headless Bot API daemon; calls lib search directly; no TUI |
 | **P8 Scale & science** | `thread`, `threadpool`, `tb`, `tools/`, CI | SPRT before strength claims |
 
 Agents must not change another pillar’s public API without updating that pillar’s contract in [research/tasks.md](research/tasks.md).

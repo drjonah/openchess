@@ -2,7 +2,7 @@
 
 > **Audience:** agents implementing OpenChess in parallel.
 > **Paradigm:** Stockfish-family (bitboards + PVS + selective search + NNUE + Lazy SMP + SPRT).
-> **Research sources:** [chesswiki.md](./chesswiki.md) · [reckless.md](./reckless.md) · [stockfish.md](./stockfish.md)
+> **Research sources:** [chesswiki.md](./chesswiki.md) · [reckless.md](./reckless.md) · [stockfish.md](./stockfish.md) · [LICHESS.md](./LICHESS.md) (P9)
 > **Out of scope here:** speculative ideas in [uniqueideas.md](./uniqueideas.md) — separate track.
 >
 > **Implementation language: Rust.** Module layout and ownership: [ARCHITECTURE.md](../ARCHITECTURE.md). Do not treat Stockfish/Reckless magic constants as gospel — copy structure, tune with SPRT.
@@ -52,6 +52,7 @@ flowchart TB
   P6[P6_Eval]
   P7[P7_UCI_Time]
   P8[P8_SMP_TB_Process]
+  P9[P9_Lichess_CLI]
 
   P1 --> P2
   P1 --> P3
@@ -65,6 +66,9 @@ flowchart TB
   P7 --> P8
   P2 --> P8
   P5 --> P8
+  P1 --> P9
+  P2 --> P9
+  P7 --> P9
 ```
 
 | Pillar | Owns | Does not own |
@@ -77,6 +81,7 @@ flowchart TB
 | **P6 Evaluation** | HCE bootstrap → NNUE FT/accumulator/forward → post-eval corrections | Move choice |
 | **P7 UCI & time** | UCI loop/options, soft/hard stop, time formulas, bench/eval debug cmds | Search internals |
 | **P8 Scale & science** | Lazy SMP, optional Syzygy, OpenBench/SPRT, PGO/SIMD polish | Feature invention without measurement |
+| **P9 Lichess CLI** | Bot API client, event/game streams, challenge matchmaking, headless daemon | TUI, search internals, UCI subprocess bridge |
 
 ---
 
@@ -103,6 +108,7 @@ flowchart TB
 | P5 Selectivity | P6 NNUE (if search stable), P7 polish — **not** another P5 feature |
 | P6 NNUE | P5 (one feature), P8 OpenBench harness prep |
 | P8 SMP | Only after single-thread strength is trustworthy |
+| P9 Lichess | P7-02, P2-02, P1-09 — parallel with P6/P7 polish; no P9 until search plays legal timed chess |
 
 ---
 
@@ -510,6 +516,65 @@ flowchart TB
   - **Note:** Wired to real `search::go` via background thread in `tui/session.rs`.
 ---
 
+## P9 — Lichess bot CLI
+
+**Contract:** Headless Lichess Bot API front only (`openchess lichess …`). NDJSON event/game streams, challenge accept/decline/create, move POST. Call `Board` + `search` + `time` directly — **no UCI subprocess, no TUI**. Token from env; never commit secrets. Feature-gated (`lichess`).
+
+**Research:** [LICHESS.md](./LICHESS.md) · [LICHESS §11 CLI-only](./LICHESS.md#110-cli-only--no-tui) · [chesswiki §6](./chesswiki.md#6-protocols--product-surface)
+
+### Tasks
+
+- [ ] **P9-01** — Lichess HTTP client + NDJSON reader  
+  - **Deps:** P1-09  
+  - **Parallel-ok:** P7-03, P6-*  
+  - **Deliverable:** `src/lichess/client.rs` — Bearer auth, line-by-line NDJSON, 429 backoff stub  
+  - **Acceptance:** Deserializes API-doc `gameStart` / `challenge` fixtures; unit tests pass offline  
+  - **Research:** [LICHESS §5–6](./LICHESS.md#5-transport-primitives)
+
+- [ ] **P9-02** — Global event stream loop  
+  - **Deps:** P9-01  
+  - **Parallel-ok:** P7-03, P6-*  
+  - **Deliverable:** `openchess lichess run --dry-run` — connect `/api/stream/event`, log events, handle keepalive pings  
+  - **Acceptance:** Manual run logs `challenge` / `gameStart` / `gameFinish`; reconnects on drop  
+  - **Research:** [LICHESS §6](./LICHESS.md#6-global-event-stream-get-apistreamevent)
+
+- [ ] **P9-03** — Single-game handler  
+  - **Deps:** P9-02, P2-02, P7-02  
+  - **Parallel-ok:** P6-*, P7-03  
+  - **Deliverable:** Per-game stream → `Board` + `TimeBudget` → search → `POST` move; one concurrent game  
+  - **Acceptance:** Completes one casual (`rated=false`) bot game without illegal moves or time forfeits  
+  - **Research:** [LICHESS §7](./LICHESS.md#7-per-game-stream-get-apibotgamestreamgameid) · [LICHESS §9](./LICHESS.md#9-mapping-lichess-clocks--openchess-timetimbudget)
+
+- [ ] **P9-04** — Challenge filter + accept  
+  - **Deps:** P9-03  
+  - **Parallel-ok:** P9-05, P9-06  
+  - **Deliverable:** TOML/env config; accept only `standard` + allowed speeds; decline rest  
+  - **Acceptance:** Ignores non-standard variants; accepts configured rapid/blitz challenges  
+  - **Research:** [LICHESS §8.1](./LICHESS.md#81-receive-challenges)
+
+- [ ] **P9-05** — Outbound challenge  
+  - **Deps:** P9-03  
+  - **Parallel-ok:** P9-04, P9-06  
+  - **Deliverable:** `openchess lichess challenge <username>` — `POST /api/challenge/{user}`  
+  - **Acceptance:** Challenges online bot; plays game when accepted  
+  - **Research:** [LICHESS §8.2](./LICHESS.md#82-challenge-other-bots)
+
+- [ ] **P9-06** — PGN export + game log  
+  - **Deps:** P9-03  
+  - **Parallel-ok:** P9-04, P9-05  
+  - **Deliverable:** On `gameFinish`, `GET /game/export/{id}` to `~/.cache/openchess/lichess/` or stdout  
+  - **Acceptance:** Saved PGN matches lichess.org game page  
+  - **Research:** [LICHESS §13](./LICHESS.md#13-api-endpoint-cheat-sheet)
+
+- [ ] **P9-07** — Reconnect + rate-limit hardening  
+  - **Deps:** P9-02  
+  - **Parallel-ok:** P9-04..P9-06  
+  - **Deliverable:** Exponential backoff on stream drop; serialize REST while streaming; 429 sleep  
+  - **Acceptance:** Survives forced disconnect in manual test without duplicate accepts  
+  - **Research:** [LICHESS §5.2](./LICHESS.md#52-rate-limiting) · [LICHESS §11.4](./LICHESS.md#114-error-handling--reconnects)
+
+---
+
 ## P8 — Scale & science
 
 **Contract:** Own parallelism, optional tablebases, and the measurement process. **No functional strength claim without a test plan.** Perft/bench gates are mandatory from day one; SPRT becomes mandatory before rating-list chasing.
@@ -615,7 +680,8 @@ Do **not** start with MCTS + deep GPU nets unless deliberately leaving this task
 | [reckless.md](./reckless.md) | Readable Rust embodiment of the full stack |
 | [stockfish.md](./stockfish.md) | Canonical C++ layout, current NNUE, Fishtest |
 | [uniqueideas.md](./uniqueideas.md) | Non-goals for this board — exploration track |
+| [LICHESS.md](./LICHESS.md) | Bot API, CLI daemon, challenge matchmaking (P9) |
 
 ---
 
-*Task board synthesized 2026-07-10 from chesswiki / reckless / stockfish research.*
+*Task board synthesized 2026-07-10 from chesswiki / reckless / stockfish research; P9 added 2026-07-12.*
