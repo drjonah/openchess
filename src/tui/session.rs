@@ -75,7 +75,7 @@ impl PlayMode {
             PlayMode::PlayerVsBot {
                 human: Color::Black,
             } => "Enter your move; bot replies",
-            PlayMode::BotVsBot => "Engine plays both sides",
+            PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
             PlayMode::Analyze => "g = best move (board unchanged)",
         }
     }
@@ -110,9 +110,7 @@ pub struct EngineSession {
     go_started: Option<Instant>,
     pending_limits: Option<GoLimits>,
     apply_on_finish: bool,
-    /// Quiet live-eval refresh: do not apply a move and do not clobber status.
-    eval_only: bool,
-    /// Side to move when the current/last search started (for White-relative conversion).
+    /// Side to move when the current/last bot search started (for White-relative conversion).
     search_stm: Option<Color>,
     /// White-relative live eval for the eval bar (`Some(0)` at startpos).
     live_eval_cp: Option<i32>,
@@ -125,8 +123,14 @@ pub struct EngineSession {
     imported_game: bool,
     /// User forced the eval bar on (also shown automatically for imported games).
     eval_bar_forced: bool,
-    /// Active engine search, if any.
+    /// Active bot / analyze search, if any.
     live: Option<LiveSearch>,
+    /// Separate background eval-bar search (does not block bot moves).
+    eval_live: Option<LiveSearch>,
+    /// Side to move when the eval search started.
+    eval_stm: Option<Color>,
+    /// Position key (`move_stack.len()`) the eval search was started for.
+    eval_position_key: Option<u64>,
 }
 
 /// Convert a side-to-move-relative search score to White-relative centipawns.
@@ -154,7 +158,6 @@ impl EngineSession {
             go_started: None,
             pending_limits: None,
             apply_on_finish: true,
-            eval_only: false,
             search_stm: None,
             live_eval_cp: Some(0),
             live_eval_stale: false,
@@ -163,6 +166,9 @@ impl EngineSession {
             imported_game: false,
             eval_bar_forced: config.tui.show_eval_bar,
             live: None,
+            eval_live: None,
+            eval_stm: None,
+            eval_position_key: None,
         }
     }
 
@@ -274,6 +280,7 @@ impl EngineSession {
 
     pub fn set_mode(&mut self, mode: PlayMode) {
         self.stop_thinking_quiet();
+        self.stop_eval_quiet();
         self.mode = Some(mode);
         self.flipped = matches!(
             mode,
@@ -321,11 +328,14 @@ impl EngineSession {
 
     /// White-relative eval for the eval bar (`None` = no analysis yet).
     ///
-    /// While a search is in progress, prefers the live search score so the bar
-    /// and numeric overlay update during thinking.
+    /// Prefers a live eval-worker score, then bot-search score while thinking,
+    /// then the cached `live_eval_cp`.
     pub fn current_eval(&self) -> Option<i32> {
         if let Some(ev) = self.analyzed.as_ref().and_then(|g| g.current_eval()) {
             return Some(ev);
+        }
+        if let Some(score) = self.live_eval_worker_score() {
+            return Some(score);
         }
         if self.info.thinking {
             if let Some(stm) = self.search_stm {
@@ -337,6 +347,22 @@ impl EngineSession {
         self.live_eval_cp
     }
 
+    /// Live score from the dedicated eval worker, if it has reported depth/nodes.
+    fn live_eval_worker_score(&self) -> Option<i32> {
+        let stm = self.eval_stm?;
+        let live = self.eval_live.as_ref()?;
+        let snap = live.live_info.lock().ok()?;
+        if snap.depth > 0 || snap.nodes > 0 {
+            Some(stm_score_to_white(snap.score_cp, stm))
+        } else {
+            None
+        }
+    }
+
+    fn position_key(&self) -> u64 {
+        self.move_stack.len() as u64
+    }
+
     /// PV / best-move hints are Analyze-only (never during live play vs bot).
     pub fn show_engine_hints(&self) -> bool {
         matches!(self.mode, Some(PlayMode::Analyze))
@@ -344,6 +370,7 @@ impl EngineSession {
 
     pub fn new_game(&mut self) {
         self.stop_thinking_quiet();
+        self.stop_eval_quiet();
         self.board = Board::startpos();
         self.move_stack.clear();
         self.last_move = None;
@@ -354,12 +381,12 @@ impl EngineSession {
         self.live_eval_cp = Some(0);
         self.live_eval_stale = false;
         self.search_stm = None;
-        self.eval_only = false;
         self.status = "Choose a game mode to start".into();
     }
 
     pub fn load_fen(&mut self, fen: &str) -> Result<(), String> {
         self.stop_thinking_quiet();
+        self.stop_eval_quiet();
         self.board = Board::from_fen(fen).map_err(|e| e.to_string())?;
         self.move_stack.clear();
         self.last_move = None;
@@ -369,7 +396,6 @@ impl EngineSession {
         self.live_eval_cp = None;
         self.live_eval_stale = true;
         self.search_stm = None;
-        self.eval_only = false;
         self.status = format!("Loaded FEN · {}", self.mode_title());
         Ok(())
     }
@@ -377,6 +403,7 @@ impl EngineSession {
     /// Load a browseable game, jump to the final ply, switch to Analyze.
     pub fn load_analyzed_game(&mut self, mut game: AnalyzedGame) -> Result<(), String> {
         self.stop_thinking_quiet();
+        self.stop_eval_quiet();
         game.cursor = game.plies.len();
         self.sync_from_game(&game)?;
         let n = game.ply_count();
@@ -432,6 +459,7 @@ impl EngineSession {
             Ok(()) => {
                 self.analyzed = Some(game);
                 self.stop_thinking_quiet();
+                self.stop_eval_quiet();
                 self.status = format!("Ply {}/{}", target, max);
                 true
             }
@@ -505,6 +533,7 @@ impl EngineSession {
                 Ok(()) => {
                     self.analyzed = Some(game);
                     self.stop_thinking_quiet();
+                    self.stop_eval_quiet();
                     self.live_eval_stale = true;
                     if self.move_stack.is_empty() {
                         self.live_eval_cp = Some(0);
@@ -524,6 +553,7 @@ impl EngineSession {
             self.board.unmake(m);
             self.last_move = self.move_stack.last().copied();
             self.stop_thinking_quiet();
+            self.stop_eval_quiet();
             self.live_eval_stale = true;
             if self.move_stack.is_empty() {
                 self.live_eval_cp = Some(0);
@@ -548,7 +578,17 @@ impl EngineSession {
         self.go_started = None;
         self.pending_limits = None;
         self.search_stm = None;
-        self.eval_only = false;
+    }
+
+    fn stop_eval_quiet(&mut self) {
+        if let Some(mut live) = self.eval_live.take() {
+            live.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = live.handle.take() {
+                let _ = handle.join();
+            }
+        }
+        self.eval_stm = None;
+        self.eval_position_key = None;
     }
 
     /// Play a single player move: SAN (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
@@ -574,6 +614,7 @@ impl EngineSession {
         self.board.make(mv);
         self.move_stack.push(mv);
         self.last_move = Some(mv);
+        self.stop_eval_quiet();
         self.live_eval_stale = true;
         self.status = format!("Played {mv}");
         Ok(())
@@ -590,55 +631,26 @@ impl EngineSession {
             self.status = "Choose a game mode first".into();
             return;
         }
-        self.start_search(limits, /*eval_only=*/ false);
+        self.start_bot_search(limits);
     }
 
-    /// Background search that only updates live eval / engine panel (does not move).
+    /// Background search that only updates live eval (does not move or block bot search).
     pub fn go_eval(&mut self, limits: GoLimits) {
-        self.start_search(limits, /*eval_only=*/ true);
+        let key = self.position_key();
+        if self.eval_live.is_some() {
+            if self.eval_position_key == Some(key) {
+                // Already evaluating this position.
+                return;
+            }
+            // Stale eval for a previous position — restart.
+            self.stop_eval_quiet();
+        }
+        self.start_eval_search(limits);
     }
 
-    fn start_search(&mut self, limits: GoLimits, eval_only: bool) {
-        if self.info.thinking {
-            if !eval_only {
-                self.status = "Already thinking".into();
-            }
-            return;
-        }
-        self.eval_only = eval_only;
-        self.apply_on_finish = if eval_only {
-            false
-        } else {
-            self.search_applies_move()
-        };
-        self.search_stm = Some(self.board.side_to_move());
-        self.info = SearchInfo {
-            thinking: true,
-            depth: 0,
-            score_cp: 0,
-            nodes: 0,
-            time: Duration::ZERO,
-            pv: String::new(),
-            bestmove: None,
-        };
-        self.go_started = Some(Instant::now());
-        self.pending_limits = Some(limits);
-        if !eval_only {
-            self.status = if self.apply_on_finish {
-                "Bot thinking…".into()
-            } else {
-                "Analyzing (will not move)…".into()
-            };
-        }
-
-        let search_limits = Limits {
-            depth: limits.depth.map(|d| d as i32),
-            movetime: limits.movetime.or(Some(Duration::from_millis(400))),
-            nodes: None,
-            ..Default::default()
-        };
+    fn limits_to_search(limits: GoLimits) -> Limits {
         // If only depth is set, don't also force a short movetime.
-        let search_limits = if limits.depth.is_some() && limits.movetime.is_none() {
+        if limits.depth.is_some() && limits.movetime.is_none() {
             Limits {
                 depth: limits.depth.map(|d| d as i32),
                 movetime: None,
@@ -646,10 +658,16 @@ impl EngineSession {
                 ..Default::default()
             }
         } else {
-            search_limits
-        };
+            Limits {
+                depth: limits.depth.map(|d| d as i32),
+                movetime: limits.movetime.or(Some(Duration::from_millis(400))),
+                nodes: None,
+                ..Default::default()
+            }
+        }
+    }
 
-        let mut board = self.board.clone();
+    fn spawn_search(board: Board, search_limits: Limits) -> LiveSearch {
         let stop = Arc::new(AtomicBool::new(false));
         let result = Arc::new(Mutex::new(None));
         let live_info = Arc::new(Mutex::new(LiveInfoSnapshot::default()));
@@ -658,6 +676,7 @@ impl EngineSession {
         let live_info_t = Arc::clone(&live_info);
 
         let handle = std::thread::spawn(move || {
+            let mut board = board;
             let mut tt = TranspositionTable::new(16);
             let mut on_info =
                 |depth: i32, score: Value, nodes: u64, time: Duration, pv: &str| {
@@ -681,12 +700,47 @@ impl EngineSession {
             }
         });
 
-        self.live = Some(LiveSearch {
+        LiveSearch {
             stop,
             result,
             live_info,
             handle: Some(handle),
-        });
+        }
+    }
+
+    fn start_bot_search(&mut self, limits: GoLimits) {
+        if self.info.thinking {
+            self.status = "Already thinking".into();
+            return;
+        }
+        self.apply_on_finish = self.search_applies_move();
+        self.search_stm = Some(self.board.side_to_move());
+        self.info = SearchInfo {
+            thinking: true,
+            depth: 0,
+            score_cp: 0,
+            nodes: 0,
+            time: Duration::ZERO,
+            pv: String::new(),
+            bestmove: None,
+        };
+        self.go_started = Some(Instant::now());
+        self.pending_limits = Some(limits);
+        self.status = if self.apply_on_finish {
+            "Bot thinking…".into()
+        } else {
+            "Analyzing (will not move)…".into()
+        };
+
+        let search_limits = Self::limits_to_search(limits);
+        self.live = Some(Self::spawn_search(self.board.clone(), search_limits));
+    }
+
+    fn start_eval_search(&mut self, limits: GoLimits) {
+        self.eval_stm = Some(self.board.side_to_move());
+        self.eval_position_key = Some(self.position_key());
+        let search_limits = Self::limits_to_search(limits);
+        self.eval_live = Some(Self::spawn_search(self.board.clone(), search_limits));
     }
 
     pub fn stop(&mut self) {
@@ -699,6 +753,11 @@ impl EngineSession {
     }
 
     pub fn poll(&mut self) {
+        self.poll_bot();
+        self.poll_eval();
+    }
+
+    fn poll_bot(&mut self) {
         if !self.info.thinking {
             return;
         }
@@ -713,8 +772,8 @@ impl EngineSession {
                     self.info.depth = snap.depth;
                     self.info.score_cp = snap.score_cp;
                     self.info.nodes = snap.nodes;
-                    // Never stream PV during bot play or quiet eval refreshes.
-                    if self.show_engine_hints() && !self.eval_only {
+                    // Never stream PV during bot play.
+                    if self.show_engine_hints() {
                         self.info.pv = snap.pv.clone();
                     } else {
                         self.info.pv.clear();
@@ -732,6 +791,49 @@ impl EngineSession {
 
         if ready {
             self.finish_search(false);
+        }
+    }
+
+    fn poll_eval(&mut self) {
+        if self.eval_live.is_none() {
+            return;
+        }
+
+        let ready = self
+            .eval_live
+            .as_ref()
+            .and_then(|l| l.result.lock().ok())
+            .map(|g| g.is_some())
+            .unwrap_or(false);
+
+        if !ready {
+            return;
+        }
+
+        let key = self.eval_position_key;
+        let stm = self.eval_stm;
+        let mut live = self.eval_live.take().unwrap();
+        live.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = live.handle.take() {
+            let _ = handle.join();
+        }
+        let result = live
+            .result
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+
+        self.eval_stm = None;
+        self.eval_position_key = None;
+
+        // Drop stale results if the position changed (should be rare after cancel).
+        if key != Some(self.position_key()) {
+            return;
+        }
+
+        if let (Some(result), Some(stm)) = (result, stm) {
+            self.live_eval_cp = Some(stm_score_to_white(result.score, stm));
+            self.live_eval_stale = false;
         }
     }
 
@@ -760,8 +862,6 @@ impl EngineSession {
         self.go_started = None;
         self.pending_limits = None;
         let apply = self.apply_on_finish;
-        let eval_only = self.eval_only;
-        self.eval_only = false;
 
         let Some(result) = result else {
             self.search_stm = None;
@@ -777,8 +877,8 @@ impl EngineSession {
         self.info.score_cp = result.score;
         self.info.nodes = result.nodes;
         self.info.time = result.time;
-        // Keep PV only when Analyze hints are allowed (not bot play / eval-only).
-        if self.show_engine_hints() && !eval_only && !apply {
+        // Keep PV only when Analyze hints are allowed (not bot play).
+        if self.show_engine_hints() && !apply {
             self.info.pv = result
                 .pv
                 .iter()
@@ -813,10 +913,6 @@ impl EngineSession {
                     self.status = format!("Engine move failed: {e}");
                 }
             }
-        } else if eval_only {
-            // Live eval bar refresh: score only, no best-move hint while playing.
-            self.info.bestmove = None;
-            self.live_eval_stale = false;
         } else {
             self.info.bestmove = Some(mv.to_string());
             self.live_eval_stale = false;
@@ -1100,6 +1196,85 @@ mod tests {
         s.set_mode(PlayMode::PlayerVsPlayer);
         s.play_text("e4").unwrap();
         assert!(s.live_eval_stale());
+    }
+
+    #[test]
+    fn eval_search_does_not_block_bot_go() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsBot {
+            human: Color::White,
+        });
+        s.play_text("e4").unwrap();
+        assert!(s.engine_should_auto_move());
+
+        // Long eval search on its own thread.
+        s.go_eval(GoLimits {
+            depth: Some(64),
+            movetime: Some(Duration::from_millis(5_000)),
+        });
+        assert!(s.eval_live.is_some());
+        assert!(!s.is_thinking());
+
+        // Bot search must still be able to start.
+        s.go(GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(50)),
+        });
+        assert!(s.is_thinking());
+        assert!(s.live.is_some());
+        assert!(s.eval_live.is_some());
+
+        s.stop_thinking_quiet();
+        s.stop_eval_quiet();
+    }
+
+    #[test]
+    fn play_move_cancels_eval_so_stale_result_is_dropped() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
+        s.set_eval_bar_forced(true);
+
+        s.go_eval(GoLimits {
+            depth: Some(64),
+            movetime: Some(Duration::from_millis(5_000)),
+        });
+        assert!(s.eval_live.is_some());
+        let before = s.live_eval_cp;
+
+        // Moving cancels the in-flight eval; a later poll must not overwrite.
+        s.play_text("e4").unwrap();
+        assert!(s.eval_live.is_none());
+        assert!(s.live_eval_stale());
+
+        s.poll();
+        // Cached eval is unchanged by a cancelled worker (stale flag stays set
+        // until a fresh eval for the new position finishes).
+        assert_eq!(s.live_eval_cp, before);
+        assert!(s.live_eval_stale());
+
+        s.stop_eval_quiet();
+    }
+
+    #[test]
+    fn go_eval_skips_when_already_running_for_same_position() {
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsPlayer);
+
+        s.go_eval(GoLimits {
+            depth: Some(64),
+            movetime: Some(Duration::from_millis(5_000)),
+        });
+        let key = s.eval_position_key;
+        assert!(key.is_some());
+
+        s.go_eval(GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(50)),
+        });
+        // Still the original long search — not restarted.
+        assert_eq!(s.eval_position_key, key);
+
+        s.stop_eval_quiet();
     }
 
     #[test]

@@ -275,6 +275,27 @@ impl Board {
             .expect("king not found")
     }
 
+    /// Total material for `color` (all pieces except kings), in centipawns.
+    pub fn material(&self, color: Color) -> Value {
+        let us = self.pieces_color(color);
+        let mut sum = 0;
+        for &pt in &[
+            PieceType::Pawn,
+            PieceType::Knight,
+            PieceType::Bishop,
+            PieceType::Rook,
+            PieceType::Queen,
+        ] {
+            sum += piece_value(pt) * (self.pieces(pt) & us).count() as Value;
+        }
+        sum
+    }
+
+    /// White material minus Black material, in centipawns.
+    pub fn material_balance(&self) -> Value {
+        self.material(Color::White) - self.material(Color::Black)
+    }
+
     /// Non-pawn material for `color` (knights + bishops + rooks + queens).
     ///
     /// Used as a simple zugzwang gate for null-move pruning.
@@ -405,5 +426,55 @@ impl fmt::Display for Board {
 impl Default for Board {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+    use crate::types::score::{BISHOP_VALUE, PAWN_VALUE, QUEEN_VALUE, ROOK_VALUE};
+
+    #[test]
+    fn startpos_material_is_balanced() {
+        let board = Board::startpos();
+        assert_eq!(board.material(Color::White), board.material(Color::Black));
+        assert_eq!(board.material_balance(), 0);
+    }
+
+    #[test]
+    fn kings_only_material_is_zero() {
+        let board = Board::from_fen("8/8/8/8/8/8/8/k2K4 w - - 0 1").unwrap();
+        assert_eq!(board.material(Color::White), 0);
+        assert_eq!(board.material(Color::Black), 0);
+        assert_eq!(board.material_balance(), 0);
+    }
+
+    #[test]
+    fn extra_queen_shifts_balance() {
+        let board = Board::from_fen("Q7/8/8/8/8/8/8/k2K4 w - - 0 1").unwrap();
+        assert_eq!(board.material_balance(), QUEEN_VALUE);
+    }
+
+    #[test]
+    fn missing_rook_shifts_balance_negative() {
+        let board = Board::from_fen("8/8/8/8/8/8/8/k2KR3 w - - 0 1").unwrap();
+        assert_eq!(board.material(Color::White), ROOK_VALUE);
+        assert_eq!(board.material_balance(), ROOK_VALUE);
+    }
+
+    #[test]
+    fn pawn_up_one() {
+        let board = Board::from_fen("rnbqkbnr/ppp1pppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+        assert_eq!(board.material(Color::White), board.material(Color::Black) + PAWN_VALUE);
+        assert_eq!(board.material_balance(), PAWN_VALUE);
+    }
+
+    #[test]
+    fn bishop_vs_knight_advantage() {
+        let board = Board::from_fen("K1B4k/8/8/8/8/8/8/n7 w - - 0 1").unwrap();
+        assert_eq!(
+            board.material_balance(),
+            BISHOP_VALUE - crate::types::score::KNIGHT_VALUE
+        );
     }
 }

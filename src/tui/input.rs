@@ -76,6 +76,10 @@ pub const HELP_PAGES: &[HelpPage] = &[
   ENGINE
     G   go / think now (Shift+G)
     s   stop thinking
+
+  MATERIAL (board header)
+    Live piece-count advantage in pawn units (+1 = up a pawn).
+    Updates on every move; not engine evaluation (see v eval bar).
 ",
     },
     HelpPage {
@@ -87,6 +91,10 @@ pub const HELP_PAGES: &[HelpPage] = &[
     ←→ / - +     adjust value
     Enter / Space toggle or cycle
     Esc / ,      close (saves on each change)
+
+  Bot depth/movetime      — Player vs Bot / Analyze
+  White/Black (BvB)       — per-color strength in Bot vs Bot
+  Eval depth/movetime     — live eval bar (separate, shorter)
 
   Advanced engine options: edit the JSON path
   shown in settings

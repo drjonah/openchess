@@ -1,7 +1,7 @@
 //! Compact engine think panel (footer of the right column).
 
 use crate::config::Config;
-use super::session::{EngineSession, SearchInfo};
+use super::session::{EngineSession, PlayMode, SearchInfo};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -31,6 +31,26 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession, config: &C
         "idle"
     };
 
+    let limits_line = if matches!(session.mode(), Some(PlayMode::BotVsBot)) {
+        format!(
+            "W d{}/{}ms · B d{}/{}ms · eval d{}/{}ms · best {best}",
+            config.bot.white.depth,
+            config.bot.white.movetime_ms,
+            config.bot.black.depth,
+            config.bot.black.movetime_ms,
+            config.eval.depth,
+            config.eval.movetime_ms
+        )
+    } else {
+        format!(
+            "bot d{}/{}ms · eval d{}/{}ms · best {best}",
+            config.bot.depth,
+            config.bot.movetime_ms,
+            config.eval.depth,
+            config.eval.movetime_ms
+        )
+    };
+
     let text = vec![
         Line::from(Span::styled(
             session.mode_title(),
@@ -53,10 +73,7 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession, config: &C
             info.depth, info.nodes
         )),
         Line::from(format!("PV {pv}")),
-        Line::from(format!(
-            "limits d{} / {}ms · best {best}",
-            config.bot.depth, config.bot.movetime_ms
-        )),
+        Line::from(limits_line),
         Line::from(Span::styled(
             "G go · s stop · , settings",
             Style::default().fg(Color::DarkGray),

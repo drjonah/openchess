@@ -7,17 +7,29 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsField {
-    Depth,
-    Movetime,
+    BotDepth,
+    BotMovetime,
+    WhiteDepth,
+    WhiteMovetime,
+    BlackDepth,
+    BlackMovetime,
+    EvalDepth,
+    EvalMovetime,
     DefaultMode,
     FlipBoard,
     ShowEvalBar,
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 5] = [
-        SettingsField::Depth,
-        SettingsField::Movetime,
+    const ALL: [SettingsField; 11] = [
+        SettingsField::BotDepth,
+        SettingsField::BotMovetime,
+        SettingsField::WhiteDepth,
+        SettingsField::WhiteMovetime,
+        SettingsField::BlackDepth,
+        SettingsField::BlackMovetime,
+        SettingsField::EvalDepth,
+        SettingsField::EvalMovetime,
         SettingsField::DefaultMode,
         SettingsField::FlipBoard,
         SettingsField::ShowEvalBar,
@@ -25,8 +37,14 @@ impl SettingsField {
 
     fn label(self) -> &'static str {
         match self {
-            SettingsField::Depth => "Depth",
-            SettingsField::Movetime => "Movetime (ms)",
+            SettingsField::BotDepth => "Bot depth",
+            SettingsField::BotMovetime => "Bot movetime (ms)",
+            SettingsField::WhiteDepth => "White depth (BvB)",
+            SettingsField::WhiteMovetime => "White movetime (ms)",
+            SettingsField::BlackDepth => "Black depth (BvB)",
+            SettingsField::BlackMovetime => "Black movetime (ms)",
+            SettingsField::EvalDepth => "Eval depth",
+            SettingsField::EvalMovetime => "Eval movetime (ms)",
             SettingsField::DefaultMode => "Default mode",
             SettingsField::FlipBoard => "Flip board",
             SettingsField::ShowEvalBar => "Show eval bar",
@@ -35,8 +53,14 @@ impl SettingsField {
 
     fn value(self, config: &Config) -> String {
         match self {
-            SettingsField::Depth => config.bot.depth.to_string(),
-            SettingsField::Movetime => config.bot.movetime_ms.to_string(),
+            SettingsField::BotDepth => config.bot.depth.to_string(),
+            SettingsField::BotMovetime => config.bot.movetime_ms.to_string(),
+            SettingsField::WhiteDepth => config.bot.white.depth.to_string(),
+            SettingsField::WhiteMovetime => config.bot.white.movetime_ms.to_string(),
+            SettingsField::BlackDepth => config.bot.black.depth.to_string(),
+            SettingsField::BlackMovetime => config.bot.black.movetime_ms.to_string(),
+            SettingsField::EvalDepth => config.eval.depth.to_string(),
+            SettingsField::EvalMovetime => config.eval.movetime_ms.to_string(),
             SettingsField::DefaultMode => config.tui.default_mode.title().to_string(),
             SettingsField::FlipBoard => on_off(config.tui.flip_board),
             SettingsField::ShowEvalBar => on_off(config.tui.show_eval_bar),
@@ -102,12 +126,36 @@ impl SettingsOverlay {
 
     fn adjust(&self, field: SettingsField, config: &mut Config, dir: i32) -> bool {
         match field {
-            SettingsField::Depth => {
+            SettingsField::BotDepth => {
                 config.adjust_depth(dir);
                 true
             }
-            SettingsField::Movetime => {
+            SettingsField::BotMovetime => {
                 config.adjust_movetime(i64::from(dir) * 50);
+                true
+            }
+            SettingsField::WhiteDepth => {
+                config.adjust_white_depth(dir);
+                true
+            }
+            SettingsField::WhiteMovetime => {
+                config.adjust_white_movetime(i64::from(dir) * 50);
+                true
+            }
+            SettingsField::BlackDepth => {
+                config.adjust_black_depth(dir);
+                true
+            }
+            SettingsField::BlackMovetime => {
+                config.adjust_black_movetime(i64::from(dir) * 50);
+                true
+            }
+            SettingsField::EvalDepth => {
+                config.adjust_eval_depth(dir);
+                true
+            }
+            SettingsField::EvalMovetime => {
+                config.adjust_eval_movetime(i64::from(dir) * 50);
                 true
             }
             SettingsField::DefaultMode => {
@@ -148,14 +196,21 @@ impl SettingsOverlay {
                 config.tui.show_eval_bar = !config.tui.show_eval_bar;
                 true
             }
-            SettingsField::Depth | SettingsField::Movetime => false,
+            SettingsField::BotDepth
+            | SettingsField::BotMovetime
+            | SettingsField::WhiteDepth
+            | SettingsField::WhiteMovetime
+            | SettingsField::BlackDepth
+            | SettingsField::BlackMovetime
+            | SettingsField::EvalDepth
+            | SettingsField::EvalMovetime => false,
         }
     }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, config: &Config, overlay: &SettingsOverlay) {
-    let width = area.width.saturating_sub(2).min(64).max(36);
-    let height = area.height.saturating_sub(1).min(16).max(12);
+    let width = area.width.saturating_sub(2).min(68).max(44);
+    let height = area.height.saturating_sub(1).min(22).max(16);
     let popup = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
@@ -166,7 +221,7 @@ pub fn render(frame: &mut Frame, area: Rect, config: &Config, overlay: &Settings
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(4)])
+        .constraints([Constraint::Min(10), Constraint::Length(4)])
         .split(popup);
 
     let items: Vec<ListItem> = SettingsField::ALL
@@ -174,7 +229,7 @@ pub fn render(frame: &mut Frame, area: Rect, config: &Config, overlay: &Settings
         .enumerate()
         .map(|(i, field)| {
             let marker = if i == overlay.selected { ">" } else { " " };
-            let line = format!("{marker} {:<16} {}", field.label(), field.value(config));
+            let line = format!("{marker} {:<22} {}", field.label(), field.value(config));
             let style = if i == overlay.selected {
                 Style::default().fg(Color::Cyan).bold()
             } else {

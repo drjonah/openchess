@@ -1,6 +1,6 @@
 //! User config (`~/.config/openchess/config.json`).
 //!
-//! Common fields (`bot`, `tui`) are edited from the TUI settings overlay.
+//! Common fields (`bot`, `eval`, `tui`) are edited from the TUI settings overlay.
 //! Advanced `engine` fields are file-only until real search/UCI lands.
 
 use crate::tui::session::{GoLimits, PlayMode};
@@ -16,6 +16,8 @@ const CONFIG_FILE_NAME: &str = "config.json";
 
 const DEFAULT_DEPTH: u32 = 8;
 const DEFAULT_MOVETIME_MS: u64 = 450;
+const DEFAULT_EVAL_DEPTH: u32 = 6;
+const DEFAULT_EVAL_MOVETIME_MS: u64 = 250;
 const MIN_DEPTH: u32 = 1;
 const MAX_DEPTH: u32 = 64;
 const MIN_MOVETIME_MS: u64 = 50;
@@ -31,6 +33,7 @@ const MAX_ELO: u32 = 3000;
 #[serde(default)]
 pub struct Config {
     pub bot: BotConfig,
+    pub eval: EvalConfig,
     pub tui: TuiConfig,
     pub engine: EngineConfig,
 }
@@ -39,6 +42,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             bot: BotConfig::default(),
+            eval: EvalConfig::default(),
             tui: TuiConfig::default(),
             engine: EngineConfig::default(),
         }
@@ -48,8 +52,13 @@ impl Default for Config {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BotConfig {
+    /// Shared strength for Player vs Bot and Analyze / manual search.
     pub depth: u32,
     pub movetime_ms: u64,
+    /// Bot vs Bot: White's search limits.
+    pub white: SideStrength,
+    /// Bot vs Bot: Black's search limits.
+    pub black: SideStrength,
 }
 
 impl Default for BotConfig {
@@ -57,6 +66,67 @@ impl Default for BotConfig {
         Self {
             depth: DEFAULT_DEPTH,
             movetime_ms: DEFAULT_MOVETIME_MS,
+            white: SideStrength::default(),
+            black: SideStrength::default(),
+        }
+    }
+}
+
+/// Per-side depth / movetime (used for Bot vs Bot mismatched strength).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SideStrength {
+    pub depth: u32,
+    pub movetime_ms: u64,
+}
+
+impl Default for SideStrength {
+    fn default() -> Self {
+        Self {
+            depth: DEFAULT_DEPTH,
+            movetime_ms: DEFAULT_MOVETIME_MS,
+        }
+    }
+}
+
+impl SideStrength {
+    fn to_go_limits(&self) -> GoLimits {
+        GoLimits {
+            depth: Some(self.depth),
+            movetime: Some(Duration::from_millis(self.movetime_ms)),
+        }
+    }
+
+    fn clamp(&mut self) {
+        self.depth = self.depth.clamp(MIN_DEPTH, MAX_DEPTH);
+        self.movetime_ms = self.movetime_ms.clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
+    }
+
+    fn adjust_depth(&mut self, delta: i32) {
+        let next = (self.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
+        self.depth = next as u32;
+    }
+
+    fn adjust_movetime(&mut self, delta_ms: i64) {
+        let next = (self.movetime_ms as i64 + delta_ms)
+            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+        self.movetime_ms = next as u64;
+    }
+}
+
+/// Limits for the live eval-bar search (separate from bot play).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EvalConfig {
+    pub depth: u32,
+    pub movetime_ms: u64,
+}
+
+impl Default for EvalConfig {
+    fn default() -> Self {
+        Self {
+            depth: DEFAULT_EVAL_DEPTH,
+            movetime_ms: DEFAULT_EVAL_MOVETIME_MS,
         }
     }
 }
@@ -230,9 +300,38 @@ impl Config {
         }
     }
 
+    /// Limits for the side about to move: BvB uses per-color strength, otherwise shared bot.
+    pub fn play_go_limits(&self, mode: Option<PlayMode>, side_to_move: Color) -> GoLimits {
+        match mode {
+            Some(PlayMode::BotVsBot) => self.side_go_limits(side_to_move),
+            _ => self.go_limits(),
+        }
+    }
+
+    pub fn side_go_limits(&self, side: Color) -> GoLimits {
+        match side {
+            Color::White => self.bot.white.to_go_limits(),
+            Color::Black => self.bot.black.to_go_limits(),
+        }
+    }
+
+    pub fn eval_go_limits(&self) -> GoLimits {
+        GoLimits {
+            depth: Some(self.eval.depth),
+            movetime: Some(Duration::from_millis(self.eval.movetime_ms)),
+        }
+    }
+
     pub fn clamp(&mut self) {
         self.bot.depth = self.bot.depth.clamp(MIN_DEPTH, MAX_DEPTH);
         self.bot.movetime_ms = self.bot.movetime_ms.clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
+        self.bot.white.clamp();
+        self.bot.black.clamp();
+        self.eval.depth = self.eval.depth.clamp(MIN_DEPTH, MAX_DEPTH);
+        self.eval.movetime_ms = self
+            .eval
+            .movetime_ms
+            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
         self.engine.hash_mb = self.engine.hash_mb.clamp(MIN_HASH_MB, MAX_HASH_MB);
         self.engine.threads = self.engine.threads.clamp(MIN_THREADS, MAX_THREADS);
         self.engine.move_overhead_ms = self
@@ -251,6 +350,33 @@ impl Config {
         let next = (self.bot.movetime_ms as i64 + delta_ms)
             .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
         self.bot.movetime_ms = next as u64;
+    }
+
+    pub fn adjust_white_depth(&mut self, delta: i32) {
+        self.bot.white.adjust_depth(delta);
+    }
+
+    pub fn adjust_white_movetime(&mut self, delta_ms: i64) {
+        self.bot.white.adjust_movetime(delta_ms);
+    }
+
+    pub fn adjust_black_depth(&mut self, delta: i32) {
+        self.bot.black.adjust_depth(delta);
+    }
+
+    pub fn adjust_black_movetime(&mut self, delta_ms: i64) {
+        self.bot.black.adjust_movetime(delta_ms);
+    }
+
+    pub fn adjust_eval_depth(&mut self, delta: i32) {
+        let next = (self.eval.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
+        self.eval.depth = next as u32;
+    }
+
+    pub fn adjust_eval_movetime(&mut self, delta_ms: i64) {
+        let next = (self.eval.movetime_ms as i64 + delta_ms)
+            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+        self.eval.movetime_ms = next as u64;
     }
 }
 
@@ -281,6 +407,10 @@ mod tests {
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.bot.depth, DEFAULT_DEPTH);
         assert_eq!(back.bot.movetime_ms, DEFAULT_MOVETIME_MS);
+        assert_eq!(back.bot.white.depth, DEFAULT_DEPTH);
+        assert_eq!(back.bot.black.movetime_ms, DEFAULT_MOVETIME_MS);
+        assert_eq!(back.eval.depth, DEFAULT_EVAL_DEPTH);
+        assert_eq!(back.eval.movetime_ms, DEFAULT_EVAL_MOVETIME_MS);
         assert_eq!(back.engine.hash_mb, 16);
     }
 
@@ -293,7 +423,53 @@ mod tests {
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.bot.depth, 12);
         assert_eq!(cfg.bot.movetime_ms, 300);
+        assert_eq!(cfg.bot.white.depth, DEFAULT_DEPTH);
+        assert_eq!(cfg.bot.black.depth, DEFAULT_DEPTH);
+        assert_eq!(cfg.eval.depth, DEFAULT_EVAL_DEPTH);
+        assert_eq!(cfg.eval.movetime_ms, DEFAULT_EVAL_MOVETIME_MS);
         assert_eq!(cfg.tui.default_mode, DefaultPlayMode::PlayerVsPlayer);
+    }
+
+    #[test]
+    fn eval_section_roundtrips() {
+        let json = r#"{
+            "bot": { "depth": 10, "movetime_ms": 5000 },
+            "eval": { "depth": 4, "movetime_ms": 2500 }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.eval.depth, 4);
+        assert_eq!(cfg.eval.movetime_ms, 2500);
+        let limits = cfg.eval_go_limits();
+        assert_eq!(limits.depth, Some(4));
+        assert_eq!(limits.movetime, Some(Duration::from_millis(2500)));
+    }
+
+    #[test]
+    fn bot_vs_bot_uses_per_side_strength() {
+        let json = r#"{
+            "bot": {
+                "depth": 8,
+                "movetime_ms": 450,
+                "white": { "depth": 12, "movetime_ms": 5000 },
+                "black": { "depth": 2, "movetime_ms": 100 }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        let white = cfg.play_go_limits(Some(PlayMode::BotVsBot), Color::White);
+        let black = cfg.play_go_limits(Some(PlayMode::BotVsBot), Color::Black);
+        let pvb = cfg.play_go_limits(
+            Some(PlayMode::PlayerVsBot {
+                human: Color::White,
+            }),
+            Color::Black,
+        );
+        assert_eq!(white.depth, Some(12));
+        assert_eq!(white.movetime, Some(Duration::from_millis(5000)));
+        assert_eq!(black.depth, Some(2));
+        assert_eq!(black.movetime, Some(Duration::from_millis(100)));
+        // PvB still uses shared bot limits, not the side strengths.
+        assert_eq!(pvb.depth, Some(8));
+        assert_eq!(pvb.movetime, Some(Duration::from_millis(450)));
     }
 
     #[test]
@@ -301,10 +477,18 @@ mod tests {
         let mut cfg = Config::default();
         cfg.bot.depth = 0;
         cfg.bot.movetime_ms = 1;
+        cfg.bot.white.depth = 0;
+        cfg.bot.black.movetime_ms = 1;
+        cfg.eval.depth = 0;
+        cfg.eval.movetime_ms = 1;
         cfg.engine.elo = 50;
         cfg.clamp();
         assert_eq!(cfg.bot.depth, MIN_DEPTH);
         assert_eq!(cfg.bot.movetime_ms, MIN_MOVETIME_MS);
+        assert_eq!(cfg.bot.white.depth, MIN_DEPTH);
+        assert_eq!(cfg.bot.black.movetime_ms, MIN_MOVETIME_MS);
+        assert_eq!(cfg.eval.depth, MIN_DEPTH);
+        assert_eq!(cfg.eval.movetime_ms, MIN_MOVETIME_MS);
         assert_eq!(cfg.engine.elo, MIN_ELO);
     }
 

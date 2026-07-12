@@ -1,5 +1,6 @@
 //! Chessboard widget — wooden squares and Unicode / block-drawing pieces.
 
+use super::material::format_material_score;
 use super::piece_art::{self, PieceSize};
 use super::session::EngineSession;
 use crate::types::{Color as Side, Piece, Square};
@@ -74,6 +75,16 @@ fn cell_content(
     piece_art::line_for_row(&lines, row_in_cell, cell_h, cell_w)
 }
 
+fn material_score_style(balance_cp: i32) -> Style {
+    if balance_cp > 0 {
+        Style::default().fg(Color::Rgb(120, 200, 120))
+    } else if balance_cp < 0 {
+        Style::default().fg(Color::Rgb(220, 120, 120))
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
 pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
     let block = Block::default().title(" Board ").borders(Borders::ALL);
     let inner = block.inner(area);
@@ -111,11 +122,16 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(format!(
-        "Move {} · {} to play",
-        session.fullmove_number(),
-        stm
-    )));
+    let balance_cp = session.board().material_balance();
+    let score_label = format_material_score(balance_cp);
+    lines.push(Line::from(vec![
+        Span::raw(format!(
+            "Move {} · {} to play · Material ",
+            session.fullmove_number(),
+            stm
+        )),
+        Span::styled(score_label, material_score_style(balance_cp)),
+    ]));
     lines.push(Line::from(""));
 
     let mid_col = (cell_w.saturating_sub(1)) / 2;

@@ -10,6 +10,7 @@ mod game_picker;
 mod import;
 mod input;
 mod mode_picker;
+mod material;
 mod move_list;
 mod san;
 mod settings;
@@ -228,7 +229,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             }
             InputAction::EngineGo => {
                 if !session.is_thinking() {
-                    session.go(config.go_limits());
+                    session.go(config.play_go_limits(session.mode(), session.side_to_move()));
                 }
             }
             InputAction::Stop => session.stop(),
@@ -470,10 +471,15 @@ fn persist_and_apply(config: &mut Config, session: &mut EngineSession) {
     }
     session.apply_tui_config(config);
     session.set_status(format!(
-        "Saved · depth {} · {}ms · {}",
+        "Saved · bot d{}/{}ms · W d{}/{}ms · B d{}/{}ms · eval d{}/{}ms",
         config.bot.depth,
         config.bot.movetime_ms,
-        Config::path().display()
+        config.bot.white.depth,
+        config.bot.white.movetime_ms,
+        config.bot.black.depth,
+        config.bot.black.movetime_ms,
+        config.eval.depth,
+        config.eval.movetime_ms,
     ));
 }
 
@@ -487,22 +493,22 @@ fn maybe_start_engine(session: &mut EngineSession, config: &Config) {
     if session.is_thinking() || !session.engine_should_auto_move() {
         return;
     }
-    session.go(config.go_limits());
+    session.go(config.play_go_limits(session.mode(), session.side_to_move()));
 }
 
-/// Refresh the live eval bar when the position is stale and the engine is idle.
+/// Refresh the live eval bar when the position is stale.
 ///
+/// Runs on a dedicated thread so it does not block bot move search.
 /// Skips when the bot is about to auto-move — that search updates the bar instead.
 fn maybe_refresh_live_eval(session: &mut EngineSession, config: &Config) {
-    if session.is_thinking()
-        || !session.show_eval_bar()
+    if !session.show_eval_bar()
         || !session.live_eval_stale()
         || session.engine_should_auto_move()
         || session.imported_game()
     {
         return;
     }
-    session.go_eval(config.go_limits());
+    session.go_eval(config.eval_go_limits());
 }
 
 fn draw(
