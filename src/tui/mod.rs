@@ -74,10 +74,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
     #[cfg(feature = "chesscom")]
     let mut game_picker: Option<game_picker::GamePicker> = None;
     maybe_start_engine(&mut session, &config);
+    maybe_refresh_live_eval(&mut session, &config);
 
     loop {
         session.poll();
         maybe_start_engine(&mut session, &config);
+        maybe_refresh_live_eval(&mut session, &config);
         terminal.draw(|frame| {
             draw(
                 frame,
@@ -428,6 +430,21 @@ fn maybe_start_engine(session: &mut EngineSession, config: &Config) {
         return;
     }
     session.go(config.go_limits());
+}
+
+/// Refresh the live eval bar when the position is stale and the engine is idle.
+///
+/// Skips when the bot is about to auto-move — that search updates the bar instead.
+fn maybe_refresh_live_eval(session: &mut EngineSession, config: &Config) {
+    if session.is_thinking()
+        || !session.show_eval_bar()
+        || !session.live_eval_stale()
+        || session.engine_should_auto_move()
+        || session.analyzed().is_some()
+    {
+        return;
+    }
+    session.go_eval(config.go_limits());
 }
 
 fn draw(

@@ -86,6 +86,14 @@ pub struct EngineSession {
     go_started: Option<Instant>,
     pending_limits: Option<GoLimits>,
     apply_on_finish: bool,
+    /// Quiet live-eval refresh: do not apply a move and do not clobber status.
+    eval_only: bool,
+    /// Side to move when the current/last search started (for White-relative conversion).
+    search_stm: Option<Color>,
+    /// White-relative live eval for the eval bar (`Some(0)` at startpos).
+    live_eval_cp: Option<i32>,
+    /// Position changed since `live_eval_cp` was computed for the current board.
+    live_eval_stale: bool,
     status: String,
     /// Imported game for ply-by-ply browse (Analyze mode).
     analyzed: Option<AnalyzedGame>,
@@ -93,6 +101,14 @@ pub struct EngineSession {
     eval_bar_forced: bool,
     /// Active engine search, if any.
     live: Option<LiveSearch>,
+}
+
+/// Convert a side-to-move-relative search score to White-relative centipawns.
+pub fn stm_score_to_white(score: i32, stm: Color) -> i32 {
+    match stm {
+        Color::White => score,
+        Color::Black => -score,
+    }
 }
 
 impl EngineSession {
@@ -113,6 +129,10 @@ impl EngineSession {
             go_started: None,
             pending_limits: None,
             apply_on_finish: true,
+            eval_only: false,
+            search_stm: None,
+            live_eval_cp: Some(0),
+            live_eval_stale: false,
             status: format!(
                 "{} — {} · , settings · ? help",
                 mode.title(),
@@ -139,6 +159,9 @@ impl EngineSession {
     }
 
     pub fn set_eval_bar_forced(&mut self, on: bool) {
+        if on && !self.eval_bar_forced {
+            self.live_eval_stale = true;
+        }
         self.eval_bar_forced = on;
     }
 
@@ -193,11 +216,18 @@ impl EngineSession {
             return;
         }
         self.eval_bar_forced = !self.eval_bar_forced;
-        self.status = if self.eval_bar_forced {
-            "Eval bar on (v to hide)".into()
+        if self.eval_bar_forced {
+            // Re-evaluate the current live position when the bar is shown.
+            self.live_eval_stale = true;
+            self.status = "Eval bar on (v to hide)".into();
         } else {
-            "Eval bar off (v to show)".into()
-        };
+            self.status = "Eval bar off (v to show)".into();
+        }
+    }
+
+    /// Position needs a live-eval search for the eval bar.
+    pub fn live_eval_stale(&self) -> bool {
+        self.live_eval_stale
     }
 
     pub fn mode(&self) -> PlayMode {
@@ -251,7 +281,10 @@ impl EngineSession {
 
     /// White-relative eval for the eval bar (`None` = no analysis yet).
     pub fn current_eval(&self) -> Option<i32> {
-        self.analyzed.as_ref().and_then(|g| g.current_eval())
+        if let Some(g) = self.analyzed.as_ref() {
+            return g.current_eval();
+        }
+        self.live_eval_cp
     }
 
     pub fn new_game(&mut self) {
@@ -261,6 +294,10 @@ impl EngineSession {
         self.move_stack.clear();
         self.last_move = None;
         self.info = SearchInfo::default();
+        self.live_eval_cp = Some(0);
+        self.live_eval_stale = false;
+        self.search_stm = None;
+        self.eval_only = false;
         self.status = format!("New game · {}", self.mode.title());
     }
 
@@ -271,6 +308,10 @@ impl EngineSession {
         self.move_stack.clear();
         self.last_move = None;
         self.info = SearchInfo::default();
+        self.live_eval_cp = None;
+        self.live_eval_stale = true;
+        self.search_stm = None;
+        self.eval_only = false;
         self.status = format!("Loaded FEN · {}", self.mode.title());
         Ok(())
     }
@@ -394,6 +435,11 @@ impl EngineSession {
             self.board.unmake(m);
             self.last_move = self.move_stack.last().copied();
             self.stop_thinking_quiet();
+            self.live_eval_stale = true;
+            if self.move_stack.is_empty() {
+                self.live_eval_cp = Some(0);
+                self.live_eval_stale = false;
+            }
             self.status = "Undid last move".into();
             true
         } else {
@@ -412,6 +458,8 @@ impl EngineSession {
         self.info.thinking = false;
         self.go_started = None;
         self.pending_limits = None;
+        self.search_stm = None;
+        self.eval_only = false;
     }
 
     /// Play a single player move: SAN (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
@@ -427,16 +475,34 @@ impl EngineSession {
         self.board.make(mv);
         self.move_stack.push(mv);
         self.last_move = Some(mv);
+        self.live_eval_stale = true;
         self.status = format!("Played {mv}");
         Ok(())
     }
 
     pub fn go(&mut self, limits: GoLimits) {
+        self.start_search(limits, /*eval_only=*/ false);
+    }
+
+    /// Background search that only updates live eval / engine panel (does not move).
+    pub fn go_eval(&mut self, limits: GoLimits) {
+        self.start_search(limits, /*eval_only=*/ true);
+    }
+
+    fn start_search(&mut self, limits: GoLimits, eval_only: bool) {
         if self.info.thinking {
-            self.status = "Already thinking".into();
+            if !eval_only {
+                self.status = "Already thinking".into();
+            }
             return;
         }
-        self.apply_on_finish = self.search_applies_move();
+        self.eval_only = eval_only;
+        self.apply_on_finish = if eval_only {
+            false
+        } else {
+            self.search_applies_move()
+        };
+        self.search_stm = Some(self.board.side_to_move());
         self.info = SearchInfo {
             thinking: true,
             depth: 0,
@@ -448,11 +514,13 @@ impl EngineSession {
         };
         self.go_started = Some(Instant::now());
         self.pending_limits = Some(limits);
-        self.status = if self.apply_on_finish {
-            "Bot thinking…".into()
-        } else {
-            "Analyzing (will not move)…".into()
-        };
+        if !eval_only {
+            self.status = if self.apply_on_finish {
+                "Bot thinking…".into()
+            } else {
+                "Analyzing (will not move)…".into()
+            };
+        }
 
         let search_limits = Limits {
             depth: limits.depth.map(|d| d as i32),
@@ -548,11 +616,18 @@ impl EngineSession {
         self.go_started = None;
         self.pending_limits = None;
         let apply = self.apply_on_finish;
+        let eval_only = self.eval_only;
+        self.eval_only = false;
 
         let Some(result) = result else {
+            self.search_stm = None;
             self.status = "Search failed".into();
             return;
         };
+
+        if let Some(stm) = self.search_stm.take() {
+            self.live_eval_cp = Some(stm_score_to_white(result.score, stm));
+        }
 
         self.info.depth = result.depth.max(0) as u32;
         self.info.score_cp = result.score;
@@ -566,24 +641,36 @@ impl EngineSession {
             .join(" ");
 
         if result.best_move.is_none() {
+            self.live_eval_stale = false;
             self.status = "No legal moves".into();
             return;
         }
 
         let mv = result.best_move;
-        self.info.bestmove = Some(mv.to_string());
         if apply {
+            // Bot already plays this move — don't leave it as a board/panel hint.
+            self.info.bestmove = None;
             match self.play_move(mv) {
                 Ok(()) => {
+                    // play_move marks live_eval_stale for a post-move refresh.
                     self.status = if stopped {
                         format!("Stopped → played {mv}")
                     } else {
                         format!("Bot plays {mv}")
                     };
                 }
-                Err(e) => self.status = format!("Engine move failed: {e}"),
+                Err(e) => {
+                    self.live_eval_stale = false;
+                    self.status = format!("Engine move failed: {e}");
+                }
             }
+        } else if eval_only {
+            // Live eval bar refresh: score only, no best-move hint while playing.
+            self.info.bestmove = None;
+            self.live_eval_stale = false;
         } else {
+            self.info.bestmove = Some(mv.to_string());
+            self.live_eval_stale = false;
             self.status = format!("Best move: {mv} (board unchanged)");
         }
     }
@@ -784,6 +871,40 @@ fn parse_san_body(body: &str) -> Result<(PieceType, Disambig, &str), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::score::{VALUE_MATE, mate_in};
+
+    #[test]
+    fn stm_score_to_white_preserves_white_stm() {
+        assert_eq!(stm_score_to_white(42, Color::White), 42);
+        assert_eq!(stm_score_to_white(-15, Color::White), -15);
+    }
+
+    #[test]
+    fn stm_score_to_white_negates_black_stm() {
+        assert_eq!(stm_score_to_white(50, Color::Black), -50);
+        assert_eq!(stm_score_to_white(-30, Color::Black), 30);
+    }
+
+    #[test]
+    fn stm_score_to_white_flips_mate_for_black() {
+        let black_mates = mate_in(3);
+        assert_eq!(stm_score_to_white(black_mates, Color::Black), -black_mates);
+        assert!(stm_score_to_white(black_mates, Color::Black) <= -VALUE_MATE + 1000);
+    }
+
+    #[test]
+    fn new_game_live_eval_starts_at_zero() {
+        let s = EngineSession::new();
+        assert_eq!(s.current_eval(), Some(0));
+        assert!(!s.live_eval_stale());
+    }
+
+    #[test]
+    fn play_move_marks_live_eval_stale() {
+        let mut s = EngineSession::new();
+        s.play_text("e4").unwrap();
+        assert!(s.live_eval_stale());
+    }
 
     #[test]
     fn accepts_short_pawn_move() {
