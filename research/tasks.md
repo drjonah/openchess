@@ -707,6 +707,15 @@ flowchart TB
 
 ---
 
+## Openings (future)
+
+- [ ] **OPEN-01** — Opening book + Book move classification
+  - **Deps:** opening book module (Polyglot or in-tree trie), TUI post-game classifier
+  - **Deliverable:** `book.probe(key)` → book moves; classifier overrides CPL class with `MoveClass::Book` when played move is in book
+  - **Acceptance:** Known theory lines (e.g. 1.e4 e5 2.Nf3) get `BK` glyph in move list after analysis
+
+---
+
 ## P9 — Lichess bot CLI
 
 **Contract:** Headless Lichess Bot API front only (`openchess lichess …`). NDJSON event/game streams, challenge accept/decline/create, move POST. Call `Board` + `search` + `time` directly — **no UCI subprocess, no TUI**. Token from env; never commit secrets. Feature-gated (`lichess`).

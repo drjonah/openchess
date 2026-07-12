@@ -4,6 +4,7 @@ mod board_view;
 mod engine_panel;
 mod piece_art;
 mod eval_bar;
+mod classify;
 mod game;
 #[cfg(feature = "chesscom")]
 mod game_picker;
@@ -161,6 +162,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                         confirm_mode(&mut session, &mut config, mode);
                     }
                     PickerAction::Navigate => {}
+                    PickerAction::OpenAnalyzeMenu => {
+                        session.set_status(
+                            "Analyze — start empty or import FEN/PGN/game · Esc back",
+                        );
+                    }
                     PickerAction::Quit => break,
                     PickerAction::OpenHelp => {
                         show_help = true;
@@ -229,7 +235,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
             }
             InputAction::EngineGo => {
                 if !session.is_thinking() {
-                    session.go(config.play_go_limits(session.mode(), session.side_to_move()));
+                    session.go(session.play_go_limits(&config));
                 }
             }
             InputAction::Stop => session.stop(),
@@ -255,7 +261,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 );
             }
             InputAction::ModeBotVsBot => {
-                confirm_mode(&mut session, &mut config, PlayMode::BotVsBot);
+                session.take_over_with_bot();
+                sync_mode_to_config(&mut config, &session);
+                maybe_start_engine(&mut session, &config);
             }
             InputAction::ModeAnalyze => {
                 confirm_mode(&mut session, &mut config, PlayMode::Analyze);
@@ -471,13 +479,15 @@ fn persist_and_apply(config: &mut Config, session: &mut EngineSession) {
     }
     session.apply_tui_config(config);
     session.set_status(format!(
-        "Saved · bot d{}/{}ms · W d{}/{}ms · B d{}/{}ms · eval d{}/{}ms",
+        "Saved · bot d{}/{}ms · W d{}/{}ms · B d{}/{}ms · analysis d{}/{}ms · eval d{}/{}ms",
         config.bot.depth,
         config.bot.movetime_ms,
         config.bot.white.depth,
         config.bot.white.movetime_ms,
         config.bot.black.depth,
         config.bot.black.movetime_ms,
+        config.analysis.depth,
+        config.analysis.movetime_ms,
         config.eval.depth,
         config.eval.movetime_ms,
     ));
@@ -493,7 +503,7 @@ fn maybe_start_engine(session: &mut EngineSession, config: &Config) {
     if session.is_thinking() || !session.engine_should_auto_move() {
         return;
     }
-    session.go(config.play_go_limits(session.mode(), session.side_to_move()));
+    session.go(session.play_go_limits(config));
 }
 
 /// Refresh the live eval bar when the position is stale.

@@ -54,6 +54,60 @@ pub struct PlyAnalysis {
     pub eval_cp: i32,
     pub classification: MoveClass,
     pub cpl: u32,
+    /// Engine best move from the position before this ply (post-game search cache).
+    pub best_move: Option<Move>,
+}
+
+/// Map centipawn loss (from the mover's perspective) to a move quality class.
+pub fn classify_cpl(cpl: u32) -> MoveClass {
+    match cpl {
+        0..=10 => MoveClass::Best,
+        11..=25 => MoveClass::Excellent,
+        26..=50 => MoveClass::Good,
+        51..=100 => MoveClass::Inaccuracy,
+        101..=200 => MoveClass::Mistake,
+        _ => MoveClass::Blunder,
+    }
+}
+
+/// Centipawn loss for the side that just moved, given consecutive white-relative evals.
+///
+/// `prev_eval` is the white-relative score before the move; `eval_cp` is after.
+/// `white_moved` is true when White played the ply being classified.
+pub fn cpl_from_eval_swing(prev_eval: i32, eval_cp: i32, white_moved: bool) -> u32 {
+    let loss = if white_moved {
+        prev_eval - eval_cp
+    } else {
+        eval_cp - prev_eval
+    };
+    loss.max(0) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_cpl_thresholds() {
+        assert_eq!(classify_cpl(0), MoveClass::Best);
+        assert_eq!(classify_cpl(10), MoveClass::Best);
+        assert_eq!(classify_cpl(11), MoveClass::Excellent);
+        assert_eq!(classify_cpl(50), MoveClass::Good);
+        assert_eq!(classify_cpl(51), MoveClass::Inaccuracy);
+        assert_eq!(classify_cpl(101), MoveClass::Mistake);
+        assert_eq!(classify_cpl(201), MoveClass::Blunder);
+    }
+
+    #[test]
+    fn cpl_swing_white_and_black() {
+        // White dropped from +50 to 0.
+        assert_eq!(cpl_from_eval_swing(50, 0, true), 50);
+        // Black dropped (white-relative rose from 0 to +80).
+        assert_eq!(cpl_from_eval_swing(0, 80, false), 80);
+        // Improvements are not a loss.
+        assert_eq!(cpl_from_eval_swing(0, 40, true), 0);
+        assert_eq!(cpl_from_eval_swing(40, 0, false), 0);
+    }
 }
 
 /// One half-move in the game.

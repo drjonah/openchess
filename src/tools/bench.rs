@@ -66,7 +66,7 @@ pub fn run_bench(depth: i32, hash_mb: usize) -> BenchReport {
         } else {
             Board::from_fen(fen).expect("bench FEN must be valid")
         };
-        let mut tt = TranspositionTable::new(hash_mb);
+        let tt = TranspositionTable::new(hash_mb);
         let result = search::go(
             &mut board,
             Limits {

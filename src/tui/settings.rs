@@ -13,41 +13,68 @@ enum SettingsField {
     WhiteMovetime,
     BlackDepth,
     BlackMovetime,
+    AnalysisDepth,
+    AnalysisMovetime,
+    ShowEvalBar,
     EvalDepth,
     EvalMovetime,
     DefaultMode,
     FlipBoard,
-    ShowEvalBar,
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 11] = [
+    const ALL: [SettingsField; 13] = [
         SettingsField::BotDepth,
         SettingsField::BotMovetime,
         SettingsField::WhiteDepth,
         SettingsField::WhiteMovetime,
         SettingsField::BlackDepth,
         SettingsField::BlackMovetime,
+        SettingsField::AnalysisDepth,
+        SettingsField::AnalysisMovetime,
+        SettingsField::ShowEvalBar,
         SettingsField::EvalDepth,
         SettingsField::EvalMovetime,
         SettingsField::DefaultMode,
         SettingsField::FlipBoard,
-        SettingsField::ShowEvalBar,
     ];
 
     fn label(self) -> &'static str {
         match self {
-            SettingsField::BotDepth => "Bot depth",
-            SettingsField::BotMovetime => "Bot movetime (ms)",
-            SettingsField::WhiteDepth => "White depth (BvB)",
+            SettingsField::BotDepth => "Depth",
+            SettingsField::BotMovetime => "Movetime (ms)",
+            SettingsField::WhiteDepth => "White depth",
             SettingsField::WhiteMovetime => "White movetime (ms)",
-            SettingsField::BlackDepth => "Black depth (BvB)",
+            SettingsField::BlackDepth => "Black depth",
             SettingsField::BlackMovetime => "Black movetime (ms)",
-            SettingsField::EvalDepth => "Eval depth",
-            SettingsField::EvalMovetime => "Eval movetime (ms)",
+            SettingsField::AnalysisDepth => "Depth",
+            SettingsField::AnalysisMovetime => "Movetime (ms)",
+            SettingsField::ShowEvalBar => "Show by default",
+            SettingsField::EvalDepth => "Search depth",
+            SettingsField::EvalMovetime => "Search movetime (ms)",
             SettingsField::DefaultMode => "Default mode",
             SettingsField::FlipBoard => "Flip board",
-            SettingsField::ShowEvalBar => "Show eval bar",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            SettingsField::BotDepth | SettingsField::BotMovetime => {
+                "Player vs Bot and Analyze / G search"
+            }
+            SettingsField::WhiteDepth
+            | SettingsField::WhiteMovetime
+            | SettingsField::BlackDepth
+            | SettingsField::BlackMovetime => "Only used in Bot vs Bot (per-side strength)",
+            SettingsField::AnalysisDepth | SettingsField::AnalysisMovetime => {
+                "Used when analyzing imported games"
+            }
+            SettingsField::ShowEvalBar => "Toggle anytime with v; always on for imported games",
+            SettingsField::EvalDepth | SettingsField::EvalMovetime => {
+                "Live eval bar only — separate from bot moves"
+            }
+            SettingsField::DefaultMode => "Suggested mode when starting a new game",
+            SettingsField::FlipBoard => "Black at bottom; auto-on when you play as Black",
         }
     }
 
@@ -59,14 +86,44 @@ impl SettingsField {
             SettingsField::WhiteMovetime => config.bot.white.movetime_ms.to_string(),
             SettingsField::BlackDepth => config.bot.black.depth.to_string(),
             SettingsField::BlackMovetime => config.bot.black.movetime_ms.to_string(),
+            SettingsField::AnalysisDepth => config.analysis.depth.to_string(),
+            SettingsField::AnalysisMovetime => config.analysis.movetime_ms.to_string(),
+            SettingsField::ShowEvalBar => on_off(config.tui.show_eval_bar),
             SettingsField::EvalDepth => config.eval.depth.to_string(),
             SettingsField::EvalMovetime => config.eval.movetime_ms.to_string(),
             SettingsField::DefaultMode => config.tui.default_mode.title().to_string(),
             SettingsField::FlipBoard => on_off(config.tui.flip_board),
-            SettingsField::ShowEvalBar => on_off(config.tui.show_eval_bar),
         }
     }
 }
+
+/// Visual rows: section headers plus selectable fields.
+#[derive(Clone, Copy, Debug)]
+enum SettingsRow {
+    Header(&'static str),
+    Field(SettingsField),
+}
+
+const ROWS: &[SettingsRow] = &[
+    SettingsRow::Header("Player vs Bot / Analyze"),
+    SettingsRow::Field(SettingsField::BotDepth),
+    SettingsRow::Field(SettingsField::BotMovetime),
+    SettingsRow::Header("Bot vs Bot"),
+    SettingsRow::Field(SettingsField::WhiteDepth),
+    SettingsRow::Field(SettingsField::WhiteMovetime),
+    SettingsRow::Field(SettingsField::BlackDepth),
+    SettingsRow::Field(SettingsField::BlackMovetime),
+    SettingsRow::Header("Post-game analysis"),
+    SettingsRow::Field(SettingsField::AnalysisDepth),
+    SettingsRow::Field(SettingsField::AnalysisMovetime),
+    SettingsRow::Header("Eval bar"),
+    SettingsRow::Field(SettingsField::ShowEvalBar),
+    SettingsRow::Field(SettingsField::EvalDepth),
+    SettingsRow::Field(SettingsField::EvalMovetime),
+    SettingsRow::Header("Display"),
+    SettingsRow::Field(SettingsField::DefaultMode),
+    SettingsRow::Field(SettingsField::FlipBoard),
+];
 
 fn on_off(v: bool) -> String {
     if v {
@@ -74,6 +131,12 @@ fn on_off(v: bool) -> String {
     } else {
         "off".into()
     }
+}
+
+fn field_row_index(field: SettingsField) -> usize {
+    ROWS.iter()
+        .position(|row| matches!(row, SettingsRow::Field(f) if *f == field))
+        .expect("every SettingsField appears in ROWS")
 }
 
 pub struct SettingsOverlay {
@@ -150,6 +213,14 @@ impl SettingsOverlay {
                 config.adjust_black_movetime(i64::from(dir) * 50);
                 true
             }
+            SettingsField::AnalysisDepth => {
+                config.adjust_analysis_depth(dir);
+                true
+            }
+            SettingsField::AnalysisMovetime => {
+                config.adjust_analysis_movetime(i64::from(dir) * 50);
+                true
+            }
             SettingsField::EvalDepth => {
                 config.adjust_eval_depth(dir);
                 true
@@ -202,6 +273,8 @@ impl SettingsOverlay {
             | SettingsField::WhiteMovetime
             | SettingsField::BlackDepth
             | SettingsField::BlackMovetime
+            | SettingsField::AnalysisDepth
+            | SettingsField::AnalysisMovetime
             | SettingsField::EvalDepth
             | SettingsField::EvalMovetime => false,
         }
@@ -209,8 +282,8 @@ impl SettingsOverlay {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, config: &Config, overlay: &SettingsOverlay) {
-    let width = area.width.saturating_sub(2).min(68).max(44);
-    let height = area.height.saturating_sub(1).min(22).max(16);
+    let width = area.width.saturating_sub(2).min(72).max(48);
+    let height = area.height.saturating_sub(1).min(30).max(20);
     let popup = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
@@ -221,26 +294,36 @@ pub fn render(frame: &mut Frame, area: Rect, config: &Config, overlay: &Settings
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(4)])
+        .constraints([Constraint::Min(12), Constraint::Length(5)])
         .split(popup);
 
-    let items: Vec<ListItem> = SettingsField::ALL
+    let selected_field = overlay.selected_field();
+    let items: Vec<ListItem> = ROWS
         .iter()
-        .enumerate()
-        .map(|(i, field)| {
-            let marker = if i == overlay.selected { ">" } else { " " };
-            let line = format!("{marker} {:<22} {}", field.label(), field.value(config));
-            let style = if i == overlay.selected {
-                Style::default().fg(Color::Cyan).bold()
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(line, style)))
+        .map(|row| match row {
+            SettingsRow::Header(title) => {
+                let line = format!("── {title} ──");
+                ListItem::new(Line::from(Span::styled(
+                    line,
+                    Style::default().fg(Color::Yellow).bold(),
+                )))
+            }
+            SettingsRow::Field(field) => {
+                let selected = *field == selected_field;
+                let marker = if selected { ">" } else { " " };
+                let line = format!("{marker} {:<24} {}", field.label(), field.value(config));
+                let style = if selected {
+                    Style::default().fg(Color::Cyan).bold()
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(line, style)))
+            }
         })
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(overlay.selected));
+    state.select(Some(field_row_index(selected_field)));
 
     frame.render_stateful_widget(
         List::new(items).block(
@@ -255,7 +338,8 @@ pub fn render(frame: &mut Frame, area: Rect, config: &Config, overlay: &Settings
 
     let path = Config::path();
     let footer = format!(
-        "↑↓ select · ←→ adjust · Enter toggle\nAdvanced settings: edit {}",
+        "{}\n↑↓ select · ←→ adjust · Enter toggle · Esc/, close\nAdvanced: {}",
+        selected_field.hint(),
         path.display()
     );
     frame.render_widget(

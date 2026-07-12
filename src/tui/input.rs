@@ -70,8 +70,8 @@ pub const HELP_PAGES: &[HelpPage] = &[
     p   Player vs Player — you move both colors
     w   Player vs Bot    — you White, bot replies
     k   Player vs Bot    — you Black, bot replies
-    x   Bot vs Bot       — engine plays both sides
-    y   Analyze          — show best move, do NOT play it
+    x   Bot vs Bot       — take over / both bots (keeps opponent PvB strength)
+    y   Analyze          — start empty or import FEN / PGN / game
 
   ENGINE
     G   go / think now (Shift+G)
@@ -92,9 +92,11 @@ pub const HELP_PAGES: &[HelpPage] = &[
     Enter / Space toggle or cycle
     Esc / ,      close (saves on each change)
 
-  Bot depth/movetime      — Player vs Bot / Analyze
-  White/Black (BvB)       — per-color strength in Bot vs Bot
-  Eval depth/movetime     — live eval bar (separate, shorter)
+  Sections in settings:
+    Player vs Bot / Analyze — shared bot strength (also G)
+    Bot vs Bot              — separate White / Black strength
+    Eval bar                — live bar only (not bot moves)
+    Display                 — default mode, flip board
 
   Advanced engine options: edit the JSON path
   shown in settings
@@ -103,7 +105,7 @@ pub const HELP_PAGES: &[HelpPage] = &[
     HelpPage {
         title: "Import",
         body: "\
-  Press i, paste or type, then Enter
+  From mode picker: choose Analyze → Import, or press i
 
     FEN, PGN text, or .fen/.pgn file path
     game URL     https://www.chess.com/game/live/…

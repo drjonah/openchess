@@ -1,6 +1,6 @@
 //! User config (`~/.config/openchess/config.json`).
 //!
-//! Common fields (`bot`, `eval`, `tui`) are edited from the TUI settings overlay.
+//! Common fields (`bot`, `eval`, `analysis`, `tui`) are edited from the TUI settings overlay.
 //! Advanced `engine` fields are file-only until real search/UCI lands.
 
 use crate::tui::session::{GoLimits, PlayMode};
@@ -18,6 +18,8 @@ const DEFAULT_DEPTH: u32 = 8;
 const DEFAULT_MOVETIME_MS: u64 = 450;
 const DEFAULT_EVAL_DEPTH: u32 = 6;
 const DEFAULT_EVAL_MOVETIME_MS: u64 = 250;
+const DEFAULT_ANALYSIS_DEPTH: u32 = 10;
+const DEFAULT_ANALYSIS_MOVETIME_MS: u64 = 500;
 const MIN_DEPTH: u32 = 1;
 const MAX_DEPTH: u32 = 64;
 const MIN_MOVETIME_MS: u64 = 50;
@@ -34,6 +36,7 @@ const MAX_ELO: u32 = 3000;
 pub struct Config {
     pub bot: BotConfig,
     pub eval: EvalConfig,
+    pub analysis: AnalysisConfig,
     pub tui: TuiConfig,
     pub engine: EngineConfig,
 }
@@ -43,6 +46,7 @@ impl Default for Config {
         Self {
             bot: BotConfig::default(),
             eval: EvalConfig::default(),
+            analysis: AnalysisConfig::default(),
             tui: TuiConfig::default(),
             engine: EngineConfig::default(),
         }
@@ -127,6 +131,23 @@ impl Default for EvalConfig {
         Self {
             depth: DEFAULT_EVAL_DEPTH,
             movetime_ms: DEFAULT_EVAL_MOVETIME_MS,
+        }
+    }
+}
+
+/// Limits for post-game analysis of imported games.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalysisConfig {
+    pub depth: u32,
+    pub movetime_ms: u64,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            depth: DEFAULT_ANALYSIS_DEPTH,
+            movetime_ms: DEFAULT_ANALYSIS_MOVETIME_MS,
         }
     }
 }
@@ -322,6 +343,13 @@ impl Config {
         }
     }
 
+    pub fn analysis_go_limits(&self) -> GoLimits {
+        GoLimits {
+            depth: Some(self.analysis.depth),
+            movetime: Some(Duration::from_millis(self.analysis.movetime_ms)),
+        }
+    }
+
     pub fn clamp(&mut self) {
         self.bot.depth = self.bot.depth.clamp(MIN_DEPTH, MAX_DEPTH);
         self.bot.movetime_ms = self.bot.movetime_ms.clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
@@ -330,6 +358,11 @@ impl Config {
         self.eval.depth = self.eval.depth.clamp(MIN_DEPTH, MAX_DEPTH);
         self.eval.movetime_ms = self
             .eval
+            .movetime_ms
+            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
+        self.analysis.depth = self.analysis.depth.clamp(MIN_DEPTH, MAX_DEPTH);
+        self.analysis.movetime_ms = self
+            .analysis
             .movetime_ms
             .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
         self.engine.hash_mb = self.engine.hash_mb.clamp(MIN_HASH_MB, MAX_HASH_MB);
@@ -378,6 +411,17 @@ impl Config {
             .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
         self.eval.movetime_ms = next as u64;
     }
+
+    pub fn adjust_analysis_depth(&mut self, delta: i32) {
+        let next = (self.analysis.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
+        self.analysis.depth = next as u32;
+    }
+
+    pub fn adjust_analysis_movetime(&mut self, delta_ms: i64) {
+        let next = (self.analysis.movetime_ms as i64 + delta_ms)
+            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+        self.analysis.movetime_ms = next as u64;
+    }
 }
 
 fn config_dir() -> PathBuf {
@@ -411,6 +455,8 @@ mod tests {
         assert_eq!(back.bot.black.movetime_ms, DEFAULT_MOVETIME_MS);
         assert_eq!(back.eval.depth, DEFAULT_EVAL_DEPTH);
         assert_eq!(back.eval.movetime_ms, DEFAULT_EVAL_MOVETIME_MS);
+        assert_eq!(back.analysis.depth, DEFAULT_ANALYSIS_DEPTH);
+        assert_eq!(back.analysis.movetime_ms, DEFAULT_ANALYSIS_MOVETIME_MS);
         assert_eq!(back.engine.hash_mb, 16);
     }
 
@@ -427,6 +473,8 @@ mod tests {
         assert_eq!(cfg.bot.black.depth, DEFAULT_DEPTH);
         assert_eq!(cfg.eval.depth, DEFAULT_EVAL_DEPTH);
         assert_eq!(cfg.eval.movetime_ms, DEFAULT_EVAL_MOVETIME_MS);
+        assert_eq!(cfg.analysis.depth, DEFAULT_ANALYSIS_DEPTH);
+        assert_eq!(cfg.analysis.movetime_ms, DEFAULT_ANALYSIS_MOVETIME_MS);
         assert_eq!(cfg.tui.default_mode, DefaultPlayMode::PlayerVsPlayer);
     }
 
@@ -442,6 +490,19 @@ mod tests {
         let limits = cfg.eval_go_limits();
         assert_eq!(limits.depth, Some(4));
         assert_eq!(limits.movetime, Some(Duration::from_millis(2500)));
+    }
+
+    #[test]
+    fn analysis_section_roundtrips() {
+        let json = r#"{
+            "analysis": { "depth": 12, "movetime_ms": 800 }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.analysis.depth, 12);
+        assert_eq!(cfg.analysis.movetime_ms, 800);
+        let limits = cfg.analysis_go_limits();
+        assert_eq!(limits.depth, Some(12));
+        assert_eq!(limits.movetime, Some(Duration::from_millis(800)));
     }
 
     #[test]
@@ -481,6 +542,8 @@ mod tests {
         cfg.bot.black.movetime_ms = 1;
         cfg.eval.depth = 0;
         cfg.eval.movetime_ms = 1;
+        cfg.analysis.depth = 0;
+        cfg.analysis.movetime_ms = 1;
         cfg.engine.elo = 50;
         cfg.clamp();
         assert_eq!(cfg.bot.depth, MIN_DEPTH);
@@ -489,6 +552,8 @@ mod tests {
         assert_eq!(cfg.bot.black.movetime_ms, MIN_MOVETIME_MS);
         assert_eq!(cfg.eval.depth, MIN_DEPTH);
         assert_eq!(cfg.eval.movetime_ms, MIN_MOVETIME_MS);
+        assert_eq!(cfg.analysis.depth, MIN_DEPTH);
+        assert_eq!(cfg.analysis.movetime_ms, MIN_MOVETIME_MS);
         assert_eq!(cfg.engine.elo, MIN_ELO);
     }
 

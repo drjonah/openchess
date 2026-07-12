@@ -281,12 +281,6 @@ pub fn game_phase(board: &Board) -> i32 {
 
 /// Midgame PST bonus for a single piece on `sq`.
 #[inline]
-pub fn pst_value(pt: PieceType, sq: Square, color: Color) -> Value {
-    pst_value_mg(pt, sq, color)
-}
-
-/// Midgame PST bonus for a single piece on `sq`.
-#[inline]
 pub fn pst_value_mg(pt: PieceType, sq: Square, color: Color) -> Value {
     match table_mg(pt) {
         Some(table) => table[pst_index(sq, color)],
@@ -358,8 +352,8 @@ mod tests {
 
     #[test]
     fn knight_center_better_than_rim() {
-        let center = pst_value(PieceType::Knight, Square::E5, Color::White);
-        let rim = pst_value(PieceType::Knight, Square::A1, Color::White);
+        let center = pst_value_mg(PieceType::Knight, Square::E5, Color::White);
+        let rim = pst_value_mg(PieceType::Knight, Square::A1, Color::White);
         assert!(
             center > rim,
             "knight on e5 ({center}) should beat rim a1 ({rim})"
@@ -369,12 +363,12 @@ mod tests {
     #[test]
     fn black_uses_rank_flip() {
         // White knight on e4 == Black knight on e5 (mirrored ranks).
-        let white = pst_value(
+        let white = pst_value_mg(
             PieceType::Knight,
             Square::from_file_rank(4, 3).unwrap(),
             Color::White,
         );
-        let black = pst_value(
+        let black = pst_value_mg(
             PieceType::Knight,
             Square::from_file_rank(4, 4).unwrap(),
             Color::Black,

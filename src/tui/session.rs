@@ -2,7 +2,10 @@
 //!
 //! Player input accepts one move: short algebraic (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
 
-use super::game::{AnalyzedGame, GameHeaders, PlyRecord};
+use super::classify::{classify_move, opponent_was_bad, ClassifyInput};
+use super::game::{
+    cpl_from_eval_swing, AnalyzedGame, GameHeaders, PlyAnalysis, PlyRecord,
+};
 use super::san::format_san;
 use crate::board::{Board, GameResult};
 use crate::search::{self, Limits, SearchResult};
@@ -62,7 +65,7 @@ impl PlayMode {
                 human: Color::Black,
             } => "Player vs Bot (you Black)",
             PlayMode::BotVsBot => "Bot vs Bot",
-            PlayMode::Analyze => "Analyze (hint only)",
+            PlayMode::Analyze => "Analyze",
         }
     }
 
@@ -76,7 +79,7 @@ impl PlayMode {
                 human: Color::Black,
             } => "Enter your move; bot replies",
             PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
-            PlayMode::Analyze => "g = best move (board unchanged)",
+            PlayMode::Analyze => "Start empty or import FEN / PGN / game",
         }
     }
 }
@@ -97,6 +100,18 @@ struct LiveSearch {
     result: Arc<Mutex<Option<SearchResult>>>,
     live_info: Arc<Mutex<LiveInfoSnapshot>>,
     handle: Option<JoinHandle<()>>,
+}
+
+/// Sequential post-game analysis of an imported transcript.
+struct PostGameState {
+    /// `0` = evaluate start position (CPL baseline); `1..=n` = position after that many plies.
+    next_step: usize,
+    total_plies: usize,
+    limits: GoLimits,
+    /// White-relative eval of the previous position (for CPL).
+    prev_eval: Option<i32>,
+    /// Best move from the most recent completed search (position before the next ply).
+    pending_best_move: Option<Move>,
 }
 
 pub struct EngineSession {
@@ -131,6 +146,17 @@ pub struct EngineSession {
     eval_stm: Option<Color>,
     /// Position key (`move_stack.len()`) the eval search was started for.
     eval_position_key: Option<u64>,
+    /// Active post-game analysis pass over an imported game.
+    post_game: Option<PostGameState>,
+    /// Dedicated search worker for post-game analysis.
+    analysis_live: Option<LiveSearch>,
+    /// Side to move for the active post-game analysis search.
+    analysis_stm: Option<Color>,
+    /// Limits used when starting post-game analysis on import.
+    analysis_limits: GoLimits,
+    /// After a PvB→BvB takeover (`x`), this color keeps shared `bot.*` strength
+    /// instead of switching to per-side Bot vs Bot settings.
+    bvb_shared_side: Option<Color>,
 }
 
 /// Convert a side-to-move-relative search score to White-relative centipawns.
@@ -169,6 +195,11 @@ impl EngineSession {
             eval_live: None,
             eval_stm: None,
             eval_position_key: None,
+            post_game: None,
+            analysis_live: None,
+            analysis_stm: None,
+            analysis_limits: config.analysis_go_limits(),
+            bvb_shared_side: None,
         }
     }
 
@@ -182,6 +213,7 @@ impl EngineSession {
         }
         self.flipped = config.tui.flip_board;
         self.eval_bar_forced = config.tui.show_eval_bar;
+        self.analysis_limits = config.analysis_go_limits();
     }
 
     pub fn set_flipped(&mut self, flipped: bool) {
@@ -281,6 +313,8 @@ impl EngineSession {
     pub fn set_mode(&mut self, mode: PlayMode) {
         self.stop_thinking_quiet();
         self.stop_eval_quiet();
+        self.stop_post_game_quiet();
+        self.bvb_shared_side = None;
         self.mode = Some(mode);
         self.flipped = matches!(
             mode,
@@ -290,6 +324,53 @@ impl EngineSession {
         );
         self.info.bestmove = None;
         self.status = format!("{} — {}", mode.title(), mode.blurb());
+    }
+
+    /// Hand the human's seat to a bot (`x`): switch to Bot vs Bot.
+    ///
+    /// If coming from Player vs Bot, the side that was already the engine keeps
+    /// the shared PvB strength; only the taking-over color uses its Bot vs Bot
+    /// per-side settings.
+    pub fn take_over_with_bot(&mut self) {
+        let keep_shared = match self.mode {
+            Some(PlayMode::PlayerVsBot { human }) => Some(!human),
+            _ => None,
+        };
+        self.set_mode(PlayMode::BotVsBot);
+        self.bvb_shared_side = keep_shared;
+        self.status = match keep_shared {
+            Some(Color::White) => {
+                "Bot vs Bot — White keeps PvB strength · Black uses side settings".into()
+            }
+            Some(Color::Black) => {
+                "Bot vs Bot — Black keeps PvB strength · White uses side settings".into()
+            }
+            None => format!(
+                "{} — {}",
+                PlayMode::BotVsBot.title(),
+                PlayMode::BotVsBot.blurb()
+            ),
+        };
+    }
+
+    /// Color that still uses shared PvB `bot.*` limits after a takeover, if any.
+    pub fn bvb_shared_side(&self) -> Option<Color> {
+        self.bvb_shared_side
+    }
+
+    /// Search limits for the side about to move, honoring takeover overrides.
+    pub fn play_go_limits(&self, config: &crate::config::Config) -> GoLimits {
+        match self.mode {
+            Some(PlayMode::BotVsBot) => {
+                let stm = self.board.side_to_move();
+                if self.bvb_shared_side == Some(stm) {
+                    config.go_limits()
+                } else {
+                    config.side_go_limits(stm)
+                }
+            }
+            _ => config.go_limits(),
+        }
     }
 
     pub fn info(&self) -> &SearchInfo {
@@ -383,12 +464,14 @@ impl EngineSession {
     pub fn new_game(&mut self) {
         self.stop_thinking_quiet();
         self.stop_eval_quiet();
+        self.stop_post_game_quiet();
         self.board = Board::startpos();
         self.move_stack.clear();
         self.last_move = None;
         self.mode = None;
         self.analyzed = Some(empty_analyzed(self.board.to_fen()));
         self.imported_game = false;
+        self.bvb_shared_side = None;
         self.info = SearchInfo::default();
         self.live_eval_cp = Some(0);
         self.live_eval_stale = false;
@@ -399,34 +482,78 @@ impl EngineSession {
     pub fn load_fen(&mut self, fen: &str) -> Result<(), String> {
         self.stop_thinking_quiet();
         self.stop_eval_quiet();
+        self.stop_post_game_quiet();
         self.board = Board::from_fen(fen).map_err(|e| e.to_string())?;
         self.move_stack.clear();
         self.last_move = None;
         self.analyzed = Some(empty_analyzed(self.board.to_fen()));
-        self.imported_game = false;
+        // Bare FEN is a study position: enter Analyze so the mode picker closes.
+        self.mode = Some(PlayMode::Analyze);
+        self.imported_game = true;
         self.info = SearchInfo::default();
         self.live_eval_cp = None;
         self.live_eval_stale = true;
         self.search_stm = None;
-        self.status = format!("Loaded FEN · {}", self.mode_title());
+        self.status = "Loaded FEN · Analyze · G for hints".into();
         Ok(())
     }
 
-    /// Load a browseable game, jump to the final ply, switch to Analyze.
+    /// Load a browseable game, jump to the final ply, switch to Analyze, and start post-game analysis.
     pub fn load_analyzed_game(&mut self, mut game: AnalyzedGame) -> Result<(), String> {
         self.stop_thinking_quiet();
         self.stop_eval_quiet();
+        self.stop_post_game_quiet();
         game.cursor = game.plies.len();
         self.sync_from_game(&game)?;
         let n = game.ply_count();
+        for ply in &mut game.plies {
+            ply.analysis = None;
+        }
         self.analyzed = Some(game);
         self.imported_game = true;
         self.mode = Some(PlayMode::Analyze);
         self.info = SearchInfo::default();
         self.live_eval_cp = None;
         self.live_eval_stale = false;
-        self.status = format!("Imported {n} plies · ←/→ step · Analyze");
+        if n > 0 {
+            self.start_post_game_analysis(self.analysis_limits);
+        } else {
+            self.status = format!("Imported {n} plies · ←/→ step · Analyze");
+        }
         Ok(())
+    }
+
+    /// Begin (or restart) sequential engine analysis of the loaded game.
+    pub fn start_post_game_analysis(&mut self, limits: GoLimits) {
+        self.stop_post_game_quiet();
+        let Some(game) = self.analyzed.as_mut() else {
+            return;
+        };
+        let total = game.ply_count();
+        if total == 0 {
+            return;
+        }
+        for ply in &mut game.plies {
+            ply.analysis = None;
+        }
+        self.post_game = Some(PostGameState {
+            next_step: 0,
+            total_plies: total,
+            limits,
+            prev_eval: None,
+            pending_best_move: None,
+        });
+        self.status = format!("Analyzing 0/{total}… · ←/→ step");
+        // First search starts on the next `poll()` tick so load stays responsive.
+    }
+
+    pub fn is_post_game_analyzing(&self) -> bool {
+        self.post_game.is_some()
+    }
+
+    /// Cancel an in-progress post-game analysis pass.
+    pub fn cancel_post_game_analysis(&mut self) {
+        self.stop_post_game_quiet();
     }
 
     pub fn apply_move_list(&mut self, list: &str) -> Result<(), String> {
@@ -603,6 +730,64 @@ impl EngineSession {
         self.eval_position_key = None;
     }
 
+    fn stop_post_game_quiet(&mut self) {
+        if let Some(mut live) = self.analysis_live.take() {
+            live.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = live.handle.take() {
+                let _ = handle.join();
+            }
+        }
+        self.analysis_stm = None;
+        self.post_game = None;
+    }
+
+    /// Build a board at the position after `ply_count` plies of the analyzed game.
+    fn board_after_plies(game: &AnalyzedGame, ply_count: usize) -> Result<Board, String> {
+        let mut board = Board::from_fen(&game.start_fen).map_err(|e| e.to_string())?;
+        for ply in game.plies.iter().take(ply_count) {
+            board.make(ply.mv);
+        }
+        Ok(board)
+    }
+
+    fn kick_post_game_search(&mut self) {
+        if self.analysis_live.is_some() {
+            return;
+        }
+        let Some(state) = self.post_game.as_ref() else {
+            return;
+        };
+        let step = state.next_step;
+        let total = state.total_plies;
+        let limits = state.limits;
+        if step > total {
+            self.post_game = None;
+            self.status = format!("Analysis complete · {total} plies · ←/→ step");
+            return;
+        }
+
+        let Some(game) = self.analyzed.as_ref() else {
+            self.post_game = None;
+            return;
+        };
+        let board = match Self::board_after_plies(game, step) {
+            Ok(b) => b,
+            Err(e) => {
+                self.post_game = None;
+                self.status = format!("Analysis failed: {e}");
+                return;
+            }
+        };
+        self.analysis_stm = Some(board.side_to_move());
+        let search_limits = Self::limits_to_search(limits);
+        self.analysis_live = Some(Self::spawn_search(board, search_limits));
+        if step == 0 {
+            self.status = format!("Analyzing 0/{total}… · ←/→ step");
+        } else {
+            self.status = format!("Analyzing {step}/{total}… · ←/→ step");
+        }
+    }
+
     /// Play a single player move: SAN (`e4`, `Nf3`, `O-O`) or UCI (`e2e4`).
     pub fn play_text(&mut self, text: &str) -> Result<(), String> {
         if self.mode.is_none() {
@@ -697,7 +882,7 @@ impl EngineSession {
 
         let handle = std::thread::spawn(move || {
             let mut board = board;
-            let mut tt = TranspositionTable::new(16);
+            let tt = TranspositionTable::new(16);
             let mut on_info =
                 |depth: i32, score: Value, nodes: u64, time: Duration, pv: &str, _hashfull: u32| {
                     if let Ok(mut snap) = live_info_t.lock() {
@@ -780,6 +965,7 @@ impl EngineSession {
     pub fn poll(&mut self) {
         self.poll_bot();
         self.poll_eval();
+        self.poll_post_game();
     }
 
     fn poll_bot(&mut self) {
@@ -859,6 +1045,115 @@ impl EngineSession {
         if let (Some(result), Some(stm)) = (result, stm) {
             self.live_eval_cp = Some(stm_score_to_white(result.score, stm));
             self.live_eval_stale = false;
+        }
+    }
+
+    fn poll_post_game(&mut self) {
+        if self.post_game.is_none() {
+            return;
+        }
+
+        if self.analysis_live.is_none() {
+            self.kick_post_game_search();
+            return;
+        }
+
+        let ready = self
+            .analysis_live
+            .as_ref()
+            .and_then(|l| l.result.lock().ok())
+            .map(|g| g.is_some())
+            .unwrap_or(false);
+
+        if !ready {
+            return;
+        }
+
+        let stm = self.analysis_stm;
+        let mut live = self.analysis_live.take().unwrap();
+        live.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = live.handle.take() {
+            let _ = handle.join();
+        }
+        let result = live.result.lock().ok().and_then(|mut g| g.take());
+        self.analysis_stm = None;
+
+        let Some(result) = result else {
+            self.post_game = None;
+            self.status = "Analysis search failed".into();
+            return;
+        };
+        let Some(stm) = stm else {
+            self.post_game = None;
+            self.status = "Analysis search failed".into();
+            return;
+        };
+
+        let eval_cp = stm_score_to_white(result.score, stm);
+        let cached_best = (!result.best_move.is_none()).then_some(result.best_move);
+        let (next_step, total) = {
+            let Some(state) = self.post_game.as_mut() else {
+                return;
+            };
+            let step = state.next_step;
+            let total = state.total_plies;
+
+            if step == 0 {
+                state.prev_eval = Some(eval_cp);
+                state.pending_best_move = cached_best;
+                state.next_step = 1;
+            } else {
+                let ply_idx = step - 1;
+                let prev = state.prev_eval.unwrap_or(eval_cp);
+                // After White moves, Black is to move (and vice versa).
+                let white_moved = stm == Color::Black;
+                let cpl = cpl_from_eval_swing(prev, eval_cp, white_moved);
+                let best_move = state.pending_best_move;
+                if let Some(game) = self.analyzed.as_mut() {
+                    let played = game.plies.get(ply_idx).map(|p| p.mv);
+                    let prev_analysis = ply_idx
+                        .checked_sub(1)
+                        .and_then(|i| game.plies.get(i))
+                        .and_then(|p| p.analysis.as_ref());
+                    let opponent_bad = opponent_was_bad(prev_analysis);
+                    if let (Some(played), Ok(board_before)) = (
+                        played,
+                        Self::board_after_plies(game, ply_idx),
+                    ) {
+                        let classification = classify_move(ClassifyInput {
+                            cpl,
+                            prev_eval: prev,
+                            after_eval: eval_cp,
+                            white_moved,
+                            played,
+                            best_move,
+                            board_before: &board_before,
+                            opponent_was_bad: opponent_bad,
+                        });
+                        if let Some(ply) = game.plies.get_mut(ply_idx) {
+                            ply.analysis = Some(PlyAnalysis {
+                                eval_cp,
+                                classification,
+                                cpl,
+                                best_move,
+                            });
+                        }
+                    }
+                }
+                state.prev_eval = Some(eval_cp);
+                state.pending_best_move = cached_best;
+                state.next_step = step + 1;
+            }
+            (state.next_step, total)
+        };
+
+        if next_step > total {
+            self.post_game = None;
+            self.status = format!("Analysis complete · {total} plies · ←/→ step");
+        } else {
+            let done = next_step.saturating_sub(1).min(total);
+            self.status = format!("Analyzing {done}/{total}… · ←/→ step");
+            self.kick_post_game_search();
         }
     }
 
@@ -1387,6 +1682,7 @@ mod tests {
 
     #[test]
     fn browse_imported_game_steps() {
+        crate::lookup::initialize();
         let tokens = ["e4", "e5", "Nf3", "Nc6"]
             .into_iter()
             .map(String::from)
@@ -1399,9 +1695,18 @@ mod tests {
             super::super::game::GameHeaders::default(),
         );
         let mut s = EngineSession::new();
+        // Shallow limits so the background pass stays cheap if it starts.
+        s.analysis_limits = GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(50)),
+        };
         s.load_analyzed_game(game).unwrap();
         assert_eq!(s.analyzed().unwrap().cursor, 4);
         assert_eq!(s.mode(), Some(PlayMode::Analyze));
+        assert!(s.is_post_game_analyzing());
+        // Cancel so browsing assertions are not blocked by the worker.
+        s.cancel_post_game_analysis();
+        // Evals were cleared / never finished.
         assert!(s.current_eval().is_none());
 
         assert!(s.step_back());
@@ -1413,5 +1718,132 @@ mod tests {
         assert_eq!(s.analyzed().unwrap().cursor, 1);
         assert!(s.goto_end());
         assert_eq!(s.analyzed().unwrap().cursor, 4);
+    }
+
+    #[test]
+    fn takeover_from_pvb_white_keeps_black_shared() {
+        let mut cfg = crate::config::Config::default();
+        cfg.bot.depth = 8;
+        cfg.bot.movetime_ms = 450;
+        cfg.bot.white.depth = 12;
+        cfg.bot.white.movetime_ms = 5000;
+        cfg.bot.black.depth = 2;
+        cfg.bot.black.movetime_ms = 100;
+
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsBot {
+            human: Color::White,
+        });
+        s.take_over_with_bot();
+        assert_eq!(s.mode(), Some(PlayMode::BotVsBot));
+        assert_eq!(s.bvb_shared_side(), Some(Color::Black));
+
+        // White (taking over) uses Bot vs Bot White settings.
+        assert_eq!(s.side_to_move(), Color::White);
+        let white = s.play_go_limits(&cfg);
+        assert_eq!(white.depth, Some(12));
+        assert_eq!(white.movetime, Some(Duration::from_millis(5000)));
+
+        s.play_text("e4").unwrap();
+        assert_eq!(s.side_to_move(), Color::Black);
+        // Black (former opponent bot) keeps shared PvB strength, not bot.black.
+        let black = s.play_go_limits(&cfg);
+        assert_eq!(black.depth, Some(8));
+        assert_eq!(black.movetime, Some(Duration::from_millis(450)));
+    }
+
+    #[test]
+    fn takeover_from_pvb_black_keeps_white_shared() {
+        let mut cfg = crate::config::Config::default();
+        cfg.bot.depth = 8;
+        cfg.bot.white.depth = 12;
+        cfg.bot.black.depth = 2;
+
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::PlayerVsBot {
+            human: Color::Black,
+        });
+        s.take_over_with_bot();
+        assert_eq!(s.bvb_shared_side(), Some(Color::White));
+
+        let white = s.play_go_limits(&cfg);
+        assert_eq!(white.depth, Some(8));
+
+        s.play_text("e4").unwrap();
+        let black = s.play_go_limits(&cfg);
+        assert_eq!(black.depth, Some(2));
+    }
+
+    #[test]
+    fn fresh_bot_vs_bot_uses_both_side_settings() {
+        let mut cfg = crate::config::Config::default();
+        cfg.bot.depth = 8;
+        cfg.bot.white.depth = 12;
+        cfg.bot.black.depth = 2;
+
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::BotVsBot);
+        assert_eq!(s.bvb_shared_side(), None);
+        assert_eq!(s.play_go_limits(&cfg).depth, Some(12));
+        s.play_text("e4").unwrap();
+        assert_eq!(s.play_go_limits(&cfg).depth, Some(2));
+    }
+
+    #[test]
+    fn post_game_analysis_fills_plies_and_eval() {
+        crate::lookup::initialize();
+        let tokens = ["e4", "e5"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let plies = EngineSession::resolve_move_tokens(fen, &tokens).unwrap();
+        let game = super::super::game::AnalyzedGame::new(
+            fen.into(),
+            plies,
+            super::super::game::GameHeaders::default(),
+        );
+        let mut s = EngineSession::new();
+        s.analysis_limits = GoLimits {
+            depth: Some(1),
+            movetime: None,
+        };
+        s.load_analyzed_game(game).unwrap();
+        assert!(s.is_post_game_analyzing());
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while s.is_post_game_analyzing() && Instant::now() < deadline {
+            s.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !s.is_post_game_analyzing(),
+            "post-game analysis should finish"
+        );
+
+        let game = s.analyzed().unwrap();
+        assert_eq!(game.ply_count(), 2);
+        for ply in &game.plies {
+            let analysis = ply.analysis.as_ref().expect("every ply should have analysis");
+            assert!(
+                !analysis.classification.glyph().is_empty(),
+                "classification should be assigned"
+            );
+            assert!(
+                analysis.best_move.is_some(),
+                "cached engine best move should be stored"
+            );
+        }
+
+        s.goto_end();
+        assert!(s.current_eval().is_some());
+        s.goto_ply(1);
+        assert_eq!(
+            s.current_eval(),
+            s.analyzed().unwrap().plies[0]
+                .analysis
+                .as_ref()
+                .map(|a| a.eval_cp)
+        );
     }
 }

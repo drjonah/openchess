@@ -309,10 +309,8 @@ fn import_pgn_lite(session: &mut EngineSession, pgn: &str) -> Result<(), String>
     }
 
     let plies = EngineSession::resolve_move_tokens(&start_fen, &tokens)?;
-    let n = plies.len();
     let game = AnalyzedGame::new(start_fen, plies, headers);
     session.load_analyzed_game(game)?;
-    session.set_status(format!("Imported {n} plies from PGN · ←/→ step"));
     Ok(())
 }
 

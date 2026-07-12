@@ -32,12 +32,16 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession, config: &C
     };
 
     let limits_line = if matches!(session.mode(), Some(PlayMode::BotVsBot)) {
+        let (w_depth, w_ms) = match session.bvb_shared_side() {
+            Some(crate::types::Color::White) => (config.bot.depth, config.bot.movetime_ms),
+            _ => (config.bot.white.depth, config.bot.white.movetime_ms),
+        };
+        let (b_depth, b_ms) = match session.bvb_shared_side() {
+            Some(crate::types::Color::Black) => (config.bot.depth, config.bot.movetime_ms),
+            _ => (config.bot.black.depth, config.bot.black.movetime_ms),
+        };
         format!(
-            "W d{}/{}ms · B d{}/{}ms · eval d{}/{}ms · best {best}",
-            config.bot.white.depth,
-            config.bot.white.movetime_ms,
-            config.bot.black.depth,
-            config.bot.black.movetime_ms,
+            "W d{w_depth}/{w_ms}ms · B d{b_depth}/{b_ms}ms · eval d{}/{}ms · best {best}",
             config.eval.depth,
             config.eval.movetime_ms
         )
