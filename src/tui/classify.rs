@@ -31,11 +31,16 @@ pub struct ClassifyInput<'a> {
     pub board_before: &'a Board,
     /// Previous ply was Mistake/Blunder or had CPL ≥ [`OPPONENT_BAD_CPL`].
     pub opponent_was_bad: bool,
+    /// The played move is a known opening-book move for `board_before` (OPEN-01).
+    pub in_book: bool,
 }
 
-/// Classify a ply: Book (deferred) → Miss → Brilliant → CPL base.
+/// Classify a ply: Book → Miss → Brilliant → CPL base.
 pub fn classify_move(input: ClassifyInput<'_>) -> MoveClass {
-    // TODO(book): assign MoveClass::Book when opening-book probing is implemented
+    // Opening theory overrides centipawn-loss tiers (OPEN-01).
+    if input.in_book {
+        return MoveClass::Book;
+    }
 
     let base = classify_cpl(input.cpl);
 
@@ -167,7 +172,16 @@ mod tests {
             best_move: Some(best),
             board_before: board,
             opponent_was_bad,
+            in_book: false,
         }
+    }
+
+    #[test]
+    fn book_move_is_classified_as_book() {
+        let e4 = Move::new(sq("e2"), sq("e4"));
+        let mut input = miss_input(0, e4, e4, 0, 0, true, false);
+        input.in_book = true;
+        assert_eq!(classify_move(input), MoveClass::Book);
     }
 
     #[test]
@@ -214,6 +228,7 @@ mod tests {
             best_move: Some(qd5),
             board_before: &board,
             opponent_was_bad: false,
+            in_book: false,
         };
         assert_eq!(classify_move(input), MoveClass::Brilliant);
     }
@@ -231,6 +246,7 @@ mod tests {
             best_move: Some(qd5),
             board_before: &board,
             opponent_was_bad: false,
+            in_book: false,
         };
         assert_eq!(classify_move(input), MoveClass::Best);
     }
@@ -250,6 +266,7 @@ mod tests {
             best_move: Some(qd5),
             board_before: &board,
             opponent_was_bad: false,
+            in_book: false,
         };
         assert_eq!(classify_move(input), MoveClass::Best);
     }

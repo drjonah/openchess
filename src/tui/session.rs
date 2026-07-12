@@ -1161,6 +1161,9 @@ impl EngineSession {
                         played,
                         Self::board_after_plies(game, ply_idx),
                     ) {
+                        // Tag opening theory regardless of the OwnBook flag so
+                        // book moves show the BK glyph (OPEN-01).
+                        let in_book = Book::embedded().is_book_move(&board_before, played);
                         let classification = classify_move(ClassifyInput {
                             cpl,
                             prev_eval: prev,
@@ -1170,6 +1173,7 @@ impl EngineSession {
                             best_move,
                             board_before: &board_before,
                             opponent_was_bad: opponent_bad,
+                            in_book,
                         });
                         if let Some(ply) = game.plies.get_mut(ply_idx) {
                             ply.analysis = Some(PlyAnalysis {
