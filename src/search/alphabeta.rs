@@ -243,12 +243,11 @@ pub fn search(
             continue;
         }
 
-        // Root hard-abort poll: stop between root moves once the hard bound is hit.
+        // Root hard-abort poll: stop between root moves once the hard bound is
+        // hit, unless the opening floor is still deferring the abort (P10-04).
         if is_root {
-            if let Some(hard) = td.hard_limit {
-                if td.start.elapsed() >= hard {
-                    stop.store(true, Ordering::Relaxed);
-                }
+            if td.hard_abort_now(td.start.elapsed()) {
+                stop.store(true, Ordering::Relaxed);
             }
             if stop.load(Ordering::Relaxed) {
                 break;

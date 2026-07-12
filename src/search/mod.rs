@@ -35,6 +35,23 @@ pub struct Limits {
     pub threads: u32,
     /// NNUE network for this search (defaults to embedded bootstrap).
     pub network: Option<std::sync::Arc<crate::eval::Network>>,
+    /// Opening-phase search floor (P10-04): when set, defer the hard time abort
+    /// until at least this depth completes (bounded by an absolute safety cap).
+    /// `None` disables the floor.
+    pub min_opening_depth: Option<i32>,
+}
+
+/// Default opening-phase minimum depth for the search floor (P10-04).
+pub const MIN_OPENING_DEPTH: i32 = 4;
+
+/// Root game-ply threshold below which the opening search floor may apply.
+pub const OPENING_PHASE_PLIES: u32 = 16;
+
+/// Absolute ceiling on the opening-floor time extension: never spend more than
+/// this multiple of the hard bound (and at least 2s) chasing the floor, so a
+/// single opening move can never stall the whole game.
+fn opening_hard_cap(hard: Duration) -> Duration {
+    hard.saturating_mul(30).max(Duration::from_secs(2))
 }
 
 impl Default for Limits {
@@ -52,6 +69,7 @@ impl Default for Limits {
             move_overhead: DEFAULT_MOVE_OVERHEAD,
             threads: 1,
             network: None,
+            min_opening_depth: None,
         }
     }
 }
@@ -86,6 +104,13 @@ pub struct ThreadData {
     pub start: Instant,
     /// Hard elapsed-time abort bound, if any.
     pub hard_limit: Option<Duration>,
+    /// Opening-floor minimum depth (0 = disabled). While the last completed
+    /// depth is below this, the hard abort is deferred (P10-04).
+    pub opening_floor_depth: i32,
+    /// Last fully completed ID depth (for the opening floor).
+    pub completed_depth: i32,
+    /// Absolute ceiling for the opening-floor extension (safety net).
+    pub opening_hard_cap: Option<Duration>,
     /// Debug counters for singular / negative extensions (P5-06).
     pub singular_extensions: u64,
     pub negative_extensions: u64,
@@ -102,10 +127,37 @@ impl ThreadData {
             nnue: NnueState::new(network),
             start: Instant::now(),
             hard_limit: None,
+            opening_floor_depth: 0,
+            completed_depth: 0,
+            opening_hard_cap: None,
             singular_extensions: 0,
             negative_extensions: 0,
             multi_cuts: 0,
         }
+    }
+}
+
+impl ThreadData {
+    /// Whether the hard time bound should abort now, honoring the opening floor.
+    ///
+    /// Past the hard bound we still defer while the last completed depth is below
+    /// `opening_floor_depth`, but never beyond the absolute `opening_hard_cap`.
+    pub fn hard_abort_now(&self, elapsed: Duration) -> bool {
+        let Some(hard) = self.hard_limit else {
+            return false;
+        };
+        if elapsed < hard {
+            return false;
+        }
+        if self.opening_floor_depth > 0 && self.completed_depth < self.opening_floor_depth {
+            return self.opening_hard_cap.is_some_and(|cap| elapsed >= cap);
+        }
+        true
+    }
+
+    /// True while the opening floor is still deferring time stops.
+    fn below_opening_floor(&self) -> bool {
+        self.opening_floor_depth > 0 && self.completed_depth < self.opening_floor_depth
     }
 }
 
@@ -189,6 +241,8 @@ pub fn go_single(
     let budget = TimeBudget::from_limits(&limits, board.side_to_move(), limits.move_overhead);
     td.start = start;
     td.hard_limit = budget.map(|b| b.hard);
+    td.opening_floor_depth = limits.min_opening_depth.unwrap_or(0).max(0);
+    td.opening_hard_cap = budget.map(|b| opening_hard_cap(b.hard));
     td.nnue.refresh(&board);
 
     if board.is_draw(0) {
@@ -244,15 +298,18 @@ pub fn go_single(
         }
         if let Some(b) = budget {
             let elapsed = start.elapsed();
-            if b.hard_exceeded(elapsed) {
+            if td.hard_abort_now(elapsed) {
                 stop.store(true, Ordering::Relaxed);
                 break;
             }
-            if b.soft_exceeded_scaled(
-                elapsed,
-                stability.best_move_changes,
-                stability.score_drop,
-            ) {
+            // Below the opening floor, keep deepening (do not soft-stop yet).
+            if !td.below_opening_floor()
+                && b.soft_exceeded_scaled(
+                    elapsed,
+                    stability.best_move_changes,
+                    stability.score_drop,
+                )
+            {
                 break;
             }
         }
@@ -326,6 +383,7 @@ pub fn go_single(
             pv: pv.clone(),
             time: start.elapsed(),
         };
+        td.completed_depth = depth;
 
         stability.observe(best_move, score);
 
@@ -342,11 +400,13 @@ pub fn go_single(
         }
 
         if let Some(b) = budget {
-            if b.soft_exceeded_scaled(
-                start.elapsed(),
-                stability.best_move_changes,
-                stability.score_drop,
-            ) {
+            if !td.below_opening_floor()
+                && b.soft_exceeded_scaled(
+                    start.elapsed(),
+                    stability.best_move_changes,
+                    stability.score_drop,
+                )
+            {
                 break;
             }
         }
@@ -576,6 +636,55 @@ mod tests {
             }
         }
         let _ = warm;
+    }
+
+    #[test]
+    fn opening_floor_reaches_min_depth_under_short_movetime() {
+        init();
+        // 100ms movetime would normally stop shallow, but the opening floor
+        // defers the hard abort until depth >= MIN_OPENING_DEPTH (P10-04).
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(16);
+        let stop = AtomicBool::new(false);
+        let result = go(
+            &mut board,
+            Limits {
+                movetime: Some(Duration::from_millis(100)),
+                min_opening_depth: Some(MIN_OPENING_DEPTH),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        assert!(
+            result.depth >= MIN_OPENING_DEPTH,
+            "opening floor should reach depth {MIN_OPENING_DEPTH}, got {}",
+            result.depth
+        );
+        assert!(board.legal_moves().contains(&result.best_move));
+    }
+
+    #[test]
+    fn opening_floor_off_may_stop_shallow() {
+        init();
+        // Sanity: without the floor, a tiny movetime is allowed to stop shallow.
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(16);
+        let stop = AtomicBool::new(false);
+        let result = go(
+            &mut board,
+            Limits {
+                movetime: Some(Duration::from_millis(100)),
+                min_opening_depth: None,
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        // Must still return a legal move; depth may be small.
+        assert!(board.legal_moves().contains(&result.best_move));
     }
 
     #[test]

@@ -162,6 +162,8 @@ pub struct EngineSession {
     book_config: BookConfig,
     /// PRNG for weighted book selection (varied bot play).
     book_rng: BookRng,
+    /// Opening-phase search floor depth (0 = off); applied on book miss (P10-04).
+    opening_floor_depth: i32,
 }
 
 /// Convert a side-to-move-relative search score to White-relative centipawns.
@@ -207,6 +209,7 @@ impl EngineSession {
             bvb_shared_side: None,
             book_config: config.book.clone(),
             book_rng: BookRng::from_entropy(),
+            opening_floor_depth: config.engine.opening_floor_depth as i32,
         }
     }
 
@@ -222,6 +225,7 @@ impl EngineSession {
         self.eval_bar_forced = config.tui.show_eval_bar;
         self.analysis_limits = config.analysis_go_limits();
         self.book_config = config.book.clone();
+        self.opening_floor_depth = config.engine.opening_floor_depth as i32;
     }
 
     pub fn set_flipped(&mut self, flipped: bool) {
@@ -983,7 +987,14 @@ impl EngineSession {
             "Analyzing (will not move)…".into()
         };
 
-        let search_limits = Self::limits_to_search(limits);
+        let mut search_limits = Self::limits_to_search(limits);
+        // Opening-phase floor: on a book miss early in the game, ensure the bot
+        // searches at least to the floor depth before the time abort (P10-04).
+        if self.opening_floor_depth > 0
+            && (self.move_stack.len() as u32) <= crate::search::OPENING_PHASE_PLIES
+        {
+            search_limits.min_opening_depth = Some(self.opening_floor_depth);
+        }
         self.live = Some(Self::spawn_search(self.board.clone(), search_limits));
     }
 
