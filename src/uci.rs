@@ -1,6 +1,7 @@
 //! UCI protocol loop with options and debug helpers (P7-01 / P7-03).
 
 use crate::board::Board;
+use crate::book::{Book, BookConfig, BookRng};
 use crate::eval::{self, Network};
 use crate::search::{self, Limits};
 use crate::time::DEFAULT_MOVE_OVERHEAD_MS;
@@ -9,7 +10,7 @@ use crate::transposition::TranspositionTable;
 use crate::types::score::{VALUE_MATE, VALUE_MATED};
 use crate::types::{Color, Value};
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,10 @@ struct UciState {
     /// Loaded NNUE network (embedded by default). Search uses this leaf eval.
     network: Arc<Network>,
     eval_file: String,
+    /// Opening-book settings (P7-06). `OwnBook`/`BookFile`/`BookDepth`.
+    book: BookConfig,
+    /// PRNG for weighted book selection.
+    book_rng: BookRng,
 }
 
 impl Default for UciState {
@@ -31,8 +36,17 @@ impl Default for UciState {
             threads: 1,
             network: Network::embedded_shared(),
             eval_file: String::new(),
+            book: BookConfig::default(),
+            book_rng: BookRng::from_entropy(),
         }
     }
+}
+
+/// Half-moves played to reach `board` (for book `max_plies`).
+fn game_ply(board: &Board) -> u32 {
+    let full = u32::from(board.fullmove_number()).max(1);
+    let black_to_move = board.side_to_move() == Color::Black;
+    (full - 1) * 2 + u32::from(black_to_move)
 }
 
 /// Run the UCI message loop on stdin/stdout until `quit`.
@@ -69,6 +83,12 @@ pub fn message_loop() {
                     stdout,
                     "option name EvalFile type string default <embedded>"
                 );
+                let _ = writeln!(stdout, "option name OwnBook type check default true");
+                let _ = writeln!(stdout, "option name BookFile type string default <none>");
+                let _ = writeln!(
+                    stdout,
+                    "option name BookDepth type spin default 16 min 0 max 60"
+                );
                 let _ = writeln!(stdout, "uciok");
             }
             "isready" => {
@@ -83,6 +103,19 @@ pub fn message_loop() {
             }
             "go" => {
                 stop.store(false, Ordering::Relaxed);
+
+                // Opening book: play a book move immediately when OwnBook is on
+                // and we are still within BookDepth (P7-06).
+                if state.book.enabled {
+                    let book = Book::from_config(&state.book);
+                    if let Some(mv) = book.probe(&board, game_ply(&board), &mut state.book_rng) {
+                        let _ = writeln!(stdout, "info string book move {mv}");
+                        let _ = writeln!(stdout, "bestmove {mv}");
+                        let _ = stdout.flush();
+                        continue;
+                    }
+                }
+
                 let mut limits = parse_go(line, state.move_overhead_ms);
                 limits.threads = state.threads;
                 limits.network = Some(Arc::clone(&state.network));
@@ -195,6 +228,22 @@ fn apply_setoption(line: &str, tt: &mut TranspositionTable, state: &mut UciState
                         eprintln!("info string failed to load EvalFile '{path}': {e}");
                     }
                 }
+            }
+        }
+        "OwnBook" => {
+            state.book.enabled = matches!(value.to_ascii_lowercase().as_str(), "true" | "on" | "1");
+        }
+        "BookFile" => {
+            let path = tokens[val_i + 1..].join(" ");
+            if path.is_empty() || path == "<none>" || path == "None" || path == "<empty>" {
+                state.book.file = None;
+            } else {
+                state.book.file = Some(PathBuf::from(path));
+            }
+        }
+        "BookDepth" => {
+            if let Ok(n) = value.parse::<u32>() {
+                state.book.max_plies = n.min(60);
             }
         }
         _ => {}
@@ -324,4 +373,45 @@ fn parse_go(line: &str, move_overhead_ms: u64) -> Limits {
         limits.depth = Some(6);
     }
     limits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_ply_counts_half_moves() {
+        crate::lookup::initialize();
+        assert_eq!(game_ply(&Board::startpos()), 0);
+
+        let mut b = Board::startpos();
+        b.make(b.parse_uci_move("e2e4").unwrap());
+        assert_eq!(game_ply(&b), 1);
+        b.make(b.parse_uci_move("e7e5").unwrap());
+        assert_eq!(game_ply(&b), 2);
+        b.make(b.parse_uci_move("g1f3").unwrap());
+        assert_eq!(game_ply(&b), 3);
+    }
+
+    #[test]
+    fn own_book_off_leaves_book_disabled() {
+        let mut tt = TranspositionTable::new(1);
+        let mut state = UciState::default();
+        apply_setoption("setoption name OwnBook value false", &mut tt, &mut state);
+        assert!(!state.book.enabled);
+        apply_setoption("setoption name OwnBook value true", &mut tt, &mut state);
+        assert!(state.book.enabled);
+    }
+
+    #[test]
+    fn book_depth_and_file_options_parse() {
+        let mut tt = TranspositionTable::new(1);
+        let mut state = UciState::default();
+        apply_setoption("setoption name BookDepth value 8", &mut tt, &mut state);
+        assert_eq!(state.book.max_plies, 8);
+        apply_setoption("setoption name BookFile value /tmp/book.bin", &mut tt, &mut state);
+        assert_eq!(state.book.file, Some(PathBuf::from("/tmp/book.bin")));
+        apply_setoption("setoption name BookFile value <none>", &mut tt, &mut state);
+        assert_eq!(state.book.file, None);
+    }
 }
