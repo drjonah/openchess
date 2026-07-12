@@ -220,13 +220,18 @@ pub fn go_single(
 
     td.root_moves = legal.into_iter().map(RootMove::new).collect();
 
+    // Fallback if the search aborts before completing a single depth: never emit
+    // movegen order (which starts with the a-file pawn push). Prefer the TT move,
+    // then a development heuristic (P2-07 / openings.md §1.3, §3 Option C).
+    let fallback = fallback_root_move(&board, &td, tt);
+
     let max_depth = limits.depth.unwrap_or(64).clamp(1, (MAX_PLY as i32) - 1);
     let mut best = SearchResult {
-        best_move: td.root_moves[0].mv,
+        best_move: fallback,
         score: 0,
         depth: 0,
         nodes: 0,
-        pv: vec![td.root_moves[0].mv],
+        pv: vec![fallback],
         time: Duration::ZERO,
     };
 
@@ -309,7 +314,7 @@ pub fn go_single(
         let pv = if !td.stack[0].pv.is_empty() {
             td.stack[0].pv.clone()
         } else {
-            vec![td.root_moves[0].mv]
+            vec![fallback]
         };
         let best_move = pv[0];
 
@@ -350,6 +355,65 @@ pub fn go_single(
     best.nodes = td.nodes;
     best.time = start.elapsed();
     best
+}
+
+/// Pick a sensible root move for when the search aborts before completing depth 1.
+///
+/// Priority (P2-07): a legal transposition-table move for this position, then the
+/// legal root move with the highest [`development_score`]. Never returns move
+/// generation order, which would surface corner-pawn pushes (`a2a3` / `a7a6`).
+fn fallback_root_move(board: &Board, td: &ThreadData, tt: &TranspositionTable) -> Move {
+    debug_assert!(!td.root_moves.is_empty());
+
+    if let Some(entry) = tt.probe(board.key()) {
+        if !entry.mv.is_none() && td.root_moves.iter().any(|rm| rm.mv == entry.mv) {
+            return entry.mv;
+        }
+    }
+
+    td.root_moves
+        .iter()
+        .map(|rm| rm.mv)
+        .max_by_key(|&mv| development_score(board, mv))
+        .unwrap_or(td.root_moves[0].mv)
+}
+
+/// Static opening-development preference used only for the abort fallback.
+///
+/// Rewards central pawn advances and minor-piece development while penalising
+/// rook/knight-file pawn pushes and premature king/queen/rook moves. This is a
+/// tie-break heuristic, not an evaluation term — real move choice comes from search.
+fn development_score(board: &Board, mv: Move) -> i32 {
+    use crate::types::PieceType;
+
+    let file = mv.to().file();
+    let central = matches!(file, 3 | 4); // d, e
+    let semi_central = matches!(file, 2 | 5); // c, f
+
+    match board.piece_on(mv.from()).piece_type() {
+        Some(PieceType::Knight) | Some(PieceType::Bishop) => {
+            50 + if central || semi_central { 10 } else { 0 }
+        }
+        Some(PieceType::Pawn) => {
+            if central {
+                40
+            } else if semi_central {
+                15
+            } else {
+                -30 // a/b/g/h pawn pushes (includes the a2a3 offender)
+            }
+        }
+        Some(PieceType::Queen) => -10,
+        Some(PieceType::Rook) => -20,
+        Some(PieceType::King) => {
+            if mv.is_castling() {
+                30
+            } else {
+                -40
+            }
+        }
+        None => 0,
+    }
 }
 
 /// Convenience: search with a fresh 1 MB TT and no external stop.
@@ -442,6 +506,76 @@ mod tests {
         );
         // With stop already set, we may only get the first root move as fallback.
         assert!(!aborted.best_move.is_none());
+    }
+
+    #[test]
+    fn zero_depth_abort_avoids_corner_pawn() {
+        init();
+        // Fresh (empty) TT and an already-set stop flag: the search cannot
+        // complete depth 1, so it must use the development fallback (P2-07).
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(1);
+        let stop = AtomicBool::new(true);
+        let result = go(
+            &mut board,
+            Limits {
+                depth: Some(20),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        assert!(!result.best_move.is_none());
+        assert!(board.legal_moves().contains(&result.best_move));
+        assert_eq!(result.depth, 0, "no full depth should complete");
+        let uci = result.best_move.to_string();
+        assert!(
+            !matches!(
+                uci.as_str(),
+                "a2a3" | "a2a4" | "h2h3" | "h2h4" | "b2b3" | "b2b4" | "g2g3" | "g2g4"
+            ),
+            "abort fallback returned a flank pawn push: {uci}"
+        );
+    }
+
+    #[test]
+    fn abort_fallback_prefers_tt_move() {
+        init();
+        // Warm the TT with a real search, then abort immediately: the fallback
+        // should return the TT move for the root position.
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(8);
+        let stop = AtomicBool::new(false);
+        let warm = go(
+            &mut board,
+            Limits {
+                depth: Some(6),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        let tt_move = tt.probe(board.key()).map(|e| e.mv);
+        stop.store(true, Ordering::Relaxed);
+        let aborted = go(
+            &mut board,
+            Limits {
+                depth: Some(20),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        assert!(board.legal_moves().contains(&aborted.best_move));
+        if let Some(mv) = tt_move {
+            if !mv.is_none() {
+                assert_eq!(aborted.best_move, mv, "expected TT move on zero-depth abort");
+            }
+        }
+        let _ = warm;
     }
 
     #[test]
