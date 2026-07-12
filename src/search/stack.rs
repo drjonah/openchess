@@ -1,5 +1,6 @@
 //! Per-ply search stack and PV helpers (P2-04).
 
+use crate::history::ContSlot;
 use crate::types::{Move, Value};
 
 pub const MAX_PLY: usize = 128;
@@ -13,6 +14,10 @@ pub struct Stack {
     pub current_move: Move,
     /// Killer move slots (updated on quiet cutoffs; P3-03).
     pub killers: [Move; 2],
+    /// Continuation context for the move that led to this ply (P3-04).
+    ///
+    /// Set on `stack[ply+1]` after `make`; sentinel after null moves / at root.
+    pub cont_slot: ContSlot,
     /// PV line starting at this ply.
     pub pv: Vec<Move>,
 }
@@ -24,6 +29,7 @@ impl Default for Stack {
             move_count: 0,
             current_move: Move::NONE,
             killers: [Move::NONE; 2],
+            cont_slot: ContSlot::NONE,
             pv: Vec::new(),
         }
     }

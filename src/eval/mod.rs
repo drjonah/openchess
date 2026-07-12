@@ -1,6 +1,7 @@
 //! Evaluation: HCE bootstrap, later NNUE.
 
 mod hce;
+mod pst;
 
 use crate::board::Board;
 use crate::types::Value;

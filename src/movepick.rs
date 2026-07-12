@@ -1,13 +1,40 @@
 //! Scored move list and staged MovePicker (P3).
 
 use crate::board::Board;
-use crate::history::HistoryTables;
+use crate::history::{continuation_slots, ContSlot, HistoryTables};
 use crate::types::score::piece_value;
 use crate::types::{Color, Move, PieceType, Value};
 
 /// Killer bonuses — above butterfly history range so killers sort first among quiets.
 pub const KILLER0_BONUS: i32 = 9000;
 pub const KILLER1_BONUS: i32 = 8000;
+
+/// Context for history-aware move scoring (butterfly, capture, continuation).
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryContext<'a> {
+    pub history: &'a HistoryTables,
+    pub killers: &'a [Move; 2],
+    pub cont_slots: [ContSlot; 4],
+    pub stm: Color,
+}
+
+impl<'a> HistoryContext<'a> {
+    /// Build context from search stack continuation slots at `ply`.
+    pub fn new(
+        history: &'a HistoryTables,
+        killers: &'a [Move; 2],
+        stack_cont: &[ContSlot],
+        ply: usize,
+        stm: Color,
+    ) -> Self {
+        Self {
+            history,
+            killers,
+            cont_slots: continuation_slots(stack_cont, ply),
+            stm,
+        }
+    }
+}
 
 /// Scored move list with pick-best selection (no full sort required).
 #[derive(Clone, Debug, Default)]
@@ -91,17 +118,12 @@ pub struct MovePicker {
 
 impl MovePicker {
     /// Main search picker over legal moves.
-    pub fn new(
-        board: &Board,
-        tt_move: Option<Move>,
-        history: &HistoryTables,
-        killers: &[Move; 2],
-    ) -> Self {
+    pub fn new(board: &Board, tt_move: Option<Move>, ctx: &HistoryContext<'_>) -> Self {
         Self::build(
             board,
             tt_move.unwrap_or(Move::NONE),
             PickerKind::Main,
-            Some((history, killers)),
+            Some(ctx),
         )
     }
 
@@ -116,12 +138,7 @@ impl MovePicker {
     }
 
     /// Check-evasion picker: legal evasions staged like main search.
-    pub fn evasion(
-        board: &Board,
-        tt_move: Option<Move>,
-        history: &HistoryTables,
-        killers: &[Move; 2],
-    ) -> Self {
+    pub fn evasion(board: &Board, tt_move: Option<Move>, ctx: &HistoryContext<'_>) -> Self {
         debug_assert!(
             board.in_check(),
             "MovePicker::evasion called outside of check"
@@ -130,7 +147,7 @@ impl MovePicker {
             board,
             tt_move.unwrap_or(Move::NONE),
             PickerKind::Evasion,
-            Some((history, killers)),
+            Some(ctx),
         )
     }
 
@@ -138,14 +155,13 @@ impl MovePicker {
         board: &Board,
         tt_move: Move,
         kind: PickerKind,
-        quiet_ctx: Option<(&HistoryTables, &[Move; 2])>,
+        ctx: Option<&HistoryContext<'_>>,
     ) -> Self {
         let mut good = MoveList::with_capacity(32);
         let mut quiets = MoveList::with_capacity(48);
         let mut bad = MoveList::with_capacity(16);
 
         let mut tt_ok = false;
-        let stm = board.side_to_move();
 
         match kind {
             PickerKind::Qsearch => {
@@ -155,11 +171,11 @@ impl MovePicker {
                     if note_tt(&mut tt_ok, tt_move, mv) {
                         continue;
                     }
-                    push_noisy(board, mv, &mut good, &mut bad);
+                    push_noisy(board, mv, None, &mut good, &mut bad);
                 }
             }
             PickerKind::Main => {
-                let (history, killers) = quiet_ctx.expect("main picker needs history/killers");
+                let ctx = ctx.expect("main picker needs history context");
                 let mut caps = Vec::new();
                 let mut qs = Vec::new();
                 board.generate_captures(&mut caps);
@@ -169,17 +185,17 @@ impl MovePicker {
                     if note_tt(&mut tt_ok, tt_move, mv) {
                         continue;
                     }
-                    push_noisy(board, mv, &mut good, &mut bad);
+                    push_noisy(board, mv, Some(ctx.history), &mut good, &mut bad);
                 }
                 for mv in qs {
                     if note_tt(&mut tt_ok, tt_move, mv) {
                         continue;
                     }
-                    quiets.push(mv, quiet_score(stm, mv, history, killers));
+                    quiets.push(mv, quiet_score(board, mv, ctx));
                 }
             }
             PickerKind::Evasion => {
-                let (history, killers) = quiet_ctx.expect("evasion picker needs history/killers");
+                let ctx = ctx.expect("evasion picker needs history context");
                 let mut evasions = Vec::new();
                 board.generate_evasions(&mut evasions);
                 for mv in evasions {
@@ -187,9 +203,9 @@ impl MovePicker {
                         continue;
                     }
                     if is_noisy(board, mv) {
-                        push_noisy(board, mv, &mut good, &mut bad);
+                        push_noisy(board, mv, Some(ctx.history), &mut good, &mut bad);
                     } else {
-                        quiets.push(mv, quiet_score(stm, mv, history, killers));
+                        quiets.push(mv, quiet_score(board, mv, ctx));
                     }
                 }
             }
@@ -269,19 +285,28 @@ pub fn is_quiet(board: &Board, mv: Move) -> bool {
     !is_noisy(board, mv)
 }
 
-fn quiet_score(stm: Color, mv: Move, history: &HistoryTables, killers: &[Move; 2]) -> i32 {
-    if mv == killers[0] {
+fn quiet_score(board: &Board, mv: Move, ctx: &HistoryContext<'_>) -> i32 {
+    if mv == ctx.killers[0] {
         KILLER0_BONUS
-    } else if mv == killers[1] {
+    } else if mv == ctx.killers[1] {
         KILLER1_BONUS
     } else {
-        history.get(stm, mv)
+        let piece = board.piece_on(mv.from());
+        ctx.history
+            .quiet_score(ctx.stm, mv, piece, &ctx.cont_slots)
     }
 }
 
-fn push_noisy(board: &Board, mv: Move, good: &mut MoveList, bad: &mut MoveList) {
+fn push_noisy(
+    board: &Board,
+    mv: Move,
+    history: Option<&HistoryTables>,
+    good: &mut MoveList,
+    bad: &mut MoveList,
+) {
     let see = board.see(mv);
-    let score = mvv_lva(board, mv) + see;
+    let hist = history.map(|h| h.capture_score(board, mv)).unwrap_or(0);
+    let score = mvv_lva(board, mv) + see + hist;
     if see >= 0 {
         good.push(mv, score);
     } else {
@@ -322,6 +347,15 @@ mod tests {
 
     fn init() {
         lookup::initialize();
+    }
+
+    fn ctx<'a>(history: &'a HistoryTables, killers: &'a [Move; 2], stm: Color) -> HistoryContext<'a> {
+        HistoryContext {
+            history,
+            killers,
+            cont_slots: [ContSlot::NONE; 4],
+            stm,
+        }
     }
 
     #[test]
@@ -376,7 +410,8 @@ mod tests {
 
         let history = HistoryTables::new();
         let killers = [Move::NONE; 2];
-        let mut picker = MovePicker::new(&board, None, &history, &killers);
+        let hctx = ctx(&history, &killers, Color::White);
+        let mut picker = MovePicker::new(&board, None, &hctx);
         let mut order = Vec::new();
         while let Some(mv) = picker.next() {
             order.push(mv);
@@ -399,7 +434,8 @@ mod tests {
         );
         let history = HistoryTables::new();
         let killers = [Move::NONE; 2];
-        let mut picker = MovePicker::new(&board, Some(e2e4), &history, &killers);
+        let hctx = ctx(&history, &killers, Color::White);
+        let mut picker = MovePicker::new(&board, Some(e2e4), &hctx);
         assert_eq!(picker.next(), Some(e2e4));
     }
 
@@ -428,7 +464,8 @@ mod tests {
 
         let history = HistoryTables::new();
         let killers = [Move::NONE; 2];
-        let mut picker = MovePicker::evasion(&board, None, &history, &killers);
+        let hctx = ctx(&history, &killers, Color::White);
+        let mut picker = MovePicker::evasion(&board, None, &hctx);
         let mut order = Vec::new();
         while let Some(mv) = picker.next() {
             order.push(mv);
@@ -457,8 +494,9 @@ mod tests {
         let mut history = HistoryTables::new();
         history.update(Color::White, e2e4, history_bonus(5));
         let killers = [Move::NONE; 2];
+        let hctx = ctx(&history, &killers, Color::White);
 
-        let mut picker = MovePicker::new(&board, None, &history, &killers);
+        let mut picker = MovePicker::new(&board, None, &hctx);
         // Skip captures (none at startpos) — first quiet should be e2e4.
         let first_quiet = picker.next();
         assert_eq!(first_quiet, Some(e2e4));
@@ -491,8 +529,84 @@ mod tests {
         // Give d2d4 a strong history score, but e2e4 is killer 0.
         history.update(Color::White, d2d4, history_bonus(8));
         let killers = [e2e4, Move::NONE];
+        let hctx = ctx(&history, &killers, Color::White);
 
-        let mut picker = MovePicker::new(&board, None, &history, &killers);
+        let mut picker = MovePicker::new(&board, None, &hctx);
         assert_eq!(picker.next(), Some(e2e4));
+    }
+
+    #[test]
+    fn capture_history_breaks_mvv_ties() {
+        init();
+        // Queen can take either of two unprotected pawns (equal MVV-LVA / SEE).
+        let mut board = Board::empty();
+        board.put_piece(Piece::WhiteKing, Square::from_str("e1").unwrap());
+        board.put_piece(Piece::BlackKing, Square::from_str("e8").unwrap());
+        board.put_piece(Piece::WhiteQueen, Square::from_str("d4").unwrap());
+        board.put_piece(Piece::BlackPawn, Square::from_str("a4").unwrap());
+        board.put_piece(Piece::BlackPawn, Square::from_str("h4").unwrap());
+        board.set_side_to_move(Color::White);
+        board.rehash();
+        board.refresh_checkers_and_pins();
+
+        let take_a4 = Move::new(
+            Square::from_str("d4").unwrap(),
+            Square::from_str("a4").unwrap(),
+        );
+        let take_h4 = Move::new(
+            Square::from_str("d4").unwrap(),
+            Square::from_str("h4").unwrap(),
+        );
+        assert!(board.see(take_a4) >= 0);
+        assert!(board.see(take_h4) >= 0);
+
+        let mut history = HistoryTables::new();
+        history.capture_update(
+            Piece::WhiteQueen,
+            Square::from_str("h4").unwrap(),
+            PieceType::Pawn,
+            history_bonus(6),
+        );
+        let killers = [Move::NONE; 2];
+        let hctx = ctx(&history, &killers, Color::White);
+        let mut picker = MovePicker::new(&board, None, &hctx);
+        assert_eq!(picker.next(), Some(take_h4));
+        assert_eq!(picker.next(), Some(take_a4));
+    }
+
+    #[test]
+    fn continuation_history_orders_quiets() {
+        init();
+        let board = Board::startpos();
+        let e2e4 = Move::new(
+            Square::from_str("e2").unwrap(),
+            Square::from_str("e4").unwrap(),
+        );
+        let d2d4 = Move::new(
+            Square::from_str("d2").unwrap(),
+            Square::from_str("d4").unwrap(),
+        );
+
+        let mut history = HistoryTables::new();
+        let prev = ContSlot::new(Piece::BlackKnight, Square::from_str("b8").unwrap());
+        history.cont_update(prev, Piece::WhitePawn, e2e4.to(), history_bonus(5));
+        let killers = [Move::NONE; 2];
+        let hctx = HistoryContext {
+            history: &history,
+            killers: &killers,
+            cont_slots: [prev, ContSlot::NONE, ContSlot::NONE, ContSlot::NONE],
+            stm: Color::White,
+        };
+        let mut picker = MovePicker::new(&board, None, &hctx);
+        assert_eq!(picker.next(), Some(e2e4));
+
+        let mut found_d2d4 = false;
+        while let Some(mv) = picker.next() {
+            if mv == d2d4 {
+                found_d2d4 = true;
+                break;
+            }
+        }
+        assert!(found_d2d4);
     }
 }

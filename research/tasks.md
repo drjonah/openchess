@@ -274,12 +274,13 @@ flowchart TB
   - **Research:** chesswiki History heuristic · stockfish `history.h`  
   - **Note:** Butterfly `[Color][from][to]` with gravity; killers scored inside quiet stage.
 
-- [ ] **P3-04** — Capture / continuation / pawn history  
+- [x] **P3-04** — Capture / continuation / pawn history  
   - **Deps:** P3-03  
   - **Parallel-ok:** P5-02, P5-03  
   - **Deliverable:** Noisy history; continuation (1/2/… ply); optional pawn-structure keyed history  
   - **Acceptance:** Histories update without overflowing; LMR/LMP can read scores (API stable)  
-  - **Research:** reckless `history.rs` · stockfish continuation/pawn history
+  - **Research:** reckless `history.rs` · stockfish continuation/pawn history  
+  - **Note:** Capture + continuation (plies 1/2/4/6); pawn history deferred; `quiet_score`/`capture_score`/`stat_score` stable for P5.
 
 ---
 
@@ -305,12 +306,13 @@ flowchart TB
   - **Acceptance:** Fill table; `hashfull` rises; shallower/stale entries replaced under pressure  
   - **Research:** reckless clustered TT · stockfish `tt.cpp`
 
-- [ ] **P4-03** — Mate score ply adjust + prefetch hook  
+- [x] **P4-03** — Mate score ply adjust + prefetch hook  
   - **Deps:** P4-02, P2-01  
   - **Parallel-ok:** P2-06, P5-*  
   - **Deliverable:** Mate/TB scores stored relative to root/ply; optional prefetch on make  
   - **Acceptance:** Mate in 3 from root still reports mate in 3 after TT hit at child ply  
-  - **Research:** reckless §6.6 · stockfish TT value adjust
+  - **Research:** reckless §6.6 · stockfish TT value adjust  
+  - **Note:** `value_to_tt`/`value_from_tt` at search probe/store; `tt.prefetch` after make.
 
 ---
 
@@ -338,12 +340,13 @@ flowchart TB
   - **Research:** chesswiki NMP · reckless catalog  
   - **Note:** `Board::do_null`/`undo_null`; NonPV scout via `selectivity::try_null_move`; no verification.
 
-- [ ] **P5-02** — Late move reductions (LMR)  
+- [x] **P5-02** — Late move reductions (LMR)  
   - **Deps:** P5-01, P3-03  
   - **Parallel-ok:** P6-03  
   - **Deliverable:** Reduce late quiet moves; re-search on fail-high; log-depth×log-move style table  
   - **Acceptance:** Node count ↓ at fixed depth; PV move not reduced; re-search path works  
-  - **Research:** chesswiki LMR · stockfish move loop
+  - **Research:** chesswiki LMR · stockfish move loop  
+  - **Note:** log×log table; quiet-only; `LMR_ENABLED` A/B toggle; PVS re-search already wired.
 
 - [ ] **P5-03** — Reverse futility (RFP) + razoring  
   - **Deps:** P5-01  
@@ -390,12 +393,13 @@ flowchart TB
   - **Acceptance:** Startpos = 0; remove white queen → large negative for White to move  
   - **Research:** chesswiki HCE material
 
-- [ ] **P6-02** — Piece-square tables (PSTs)  
+- [x] **P6-02** — Piece-square tables (PSTs)  
   - **Deps:** P6-01  
   - **Parallel-ok:** P2-01  
   - **Deliverable:** Midgame PSTs added to material  
   - **Acceptance:** Knight on rim < knight on center all else equal  
-  - **Research:** chesswiki PSTs
+  - **Research:** chesswiki PSTs  
+  - **Note:** Midgame-only in `eval/pst.rs`; tapering deferred to P6-03.
 
 - [ ] **P6-03** — Tapered HCE extras (optional growth)  
   - **Deps:** P6-02  
@@ -449,12 +453,13 @@ flowchart TB
   - **Acceptance:** Speaks UCI with a GUI or `cutechess`; `go depth 1` returns legal bestmove  
   - **Research:** chesswiki UCI · stockfish uci loop
 
-- [ ] **P7-02** — Time management soft/hard  
+- [x] **P7-02** — Time management soft/hard  
   - **Deps:** P7-01, P2-02  
   - **Parallel-ok:** P2-05, P4-02  
   - **Deliverable:** Parse `wtime/btime/winc/binc/movestogo`; soft ≈ `remaining/20 + inc/2`; hard abort; Move Overhead  
   - **Acceptance:** `go wtime 5000 winc 50` stops before hard limit; never exceeds hard by more than overhead slack  
-  - **Research:** chesswiki Time management · stockfish timeman · reckless soft/hard
+  - **Research:** chesswiki Time management · stockfish timeman · reckless soft/hard  
+  - **Note:** `time::TimeBudget`; soft between ID depths; hard sets stop; overhead default 50ms.
 
 - [ ] **P7-03** — UCI options + debug helpers  
   - **Deps:** P7-01, P4-02  

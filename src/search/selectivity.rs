@@ -1,4 +1,4 @@
-//! Selective search hooks (P5). Improving flag + null-move pruning are live.
+//! Selective search hooks (P5). Improving flag, NMP, and LMR are live.
 
 use super::alphabeta::{search, NodeType};
 use super::ThreadData;
@@ -6,6 +6,8 @@ use crate::board::Board;
 use crate::transposition::TranspositionTable;
 use crate::types::{Move, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
+#[cfg(test)]
 use std::sync::Mutex;
 
 /// Runtime toggle for null-move pruning (tests flip this for A/B node counts).
@@ -14,6 +16,29 @@ pub static NMP_ENABLED: AtomicBool = AtomicBool::new(true);
 /// Serializes tests that flip [`NMP_ENABLED`].
 #[cfg(test)]
 pub(super) static NMP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Runtime toggle for late-move reductions (tests flip this for A/B node counts).
+pub static LMR_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Serializes tests that flip [`LMR_ENABLED`].
+#[cfg(test)]
+pub(super) static LMR_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+const LMR_MAX: usize = 64;
+const LMR_SCALE: f64 = 2.75;
+const LMR_BASE: f64 = 0.5;
+
+/// Precomputed reductions: `floor(BASE + ln(d) * ln(m) / SCALE)`.
+static LMR_TABLE: LazyLock<[[i32; LMR_MAX]; LMR_MAX]> = LazyLock::new(|| {
+    let mut table = [[0i32; LMR_MAX]; LMR_MAX];
+    for d in 1..LMR_MAX {
+        for m in 1..LMR_MAX {
+            table[d][m] =
+                (LMR_BASE + (d as f64).ln() * (m as f64).ln() / LMR_SCALE).floor() as i32;
+        }
+    }
+    table
+});
 
 /// `true` when static eval is better than ~2 plies ago (and not in check).
 #[inline]
@@ -106,10 +131,34 @@ pub fn should_prune_move(_move_count: i32, _depth: i32, _is_quiet: bool) -> bool
     false
 }
 
-/// Placeholder LMR reduction (plies to subtract). Zero until P5-02.
+/// Late-move reduction in plies (log-depth × log-move table; tune with SPRT later).
+///
+/// Returns `0` when LMR does not apply (captures, checks, early moves, shallow depth).
 #[inline]
-pub fn late_move_reduction(_depth: i32, _move_count: i32) -> i32 {
-    0
+pub fn late_move_reduction(
+    depth: i32,
+    move_count: i32,
+    quiet: bool,
+    improving: bool,
+    in_check: bool,
+    gives_check: bool,
+) -> i32 {
+    if !LMR_ENABLED.load(Ordering::Relaxed) {
+        return 0;
+    }
+    if !quiet || in_check || gives_check || depth < 3 || move_count <= 1 {
+        return 0;
+    }
+
+    let d = (depth as usize).min(LMR_MAX - 1);
+    let m = (move_count as usize).min(LMR_MAX - 1);
+    let mut r = LMR_TABLE[d][m];
+
+    if improving {
+        r = (r - 1).max(0);
+    }
+
+    r.min(depth - 2).max(0)
 }
 
 #[cfg(test)]
@@ -206,5 +255,54 @@ mod tests {
             false
         )
         .is_none());
+    }
+
+    #[test]
+    fn lmr_guards_skip_reduction() {
+        // Captures / checks / shallow / first move → 0.
+        assert_eq!(late_move_reduction(6, 4, false, false, false, false), 0);
+        assert_eq!(late_move_reduction(6, 4, true, false, true, false), 0);
+        assert_eq!(late_move_reduction(6, 4, true, false, false, true), 0);
+        assert_eq!(late_move_reduction(2, 4, true, false, false, false), 0);
+        assert_eq!(late_move_reduction(6, 1, true, false, false, false), 0);
+    }
+
+    #[test]
+    fn lmr_formula_grows_with_depth_and_moves() {
+        let r_shallow = late_move_reduction(3, 2, true, false, false, false);
+        let r_deeper = late_move_reduction(8, 2, true, false, false, false);
+        let r_later = late_move_reduction(8, 16, true, false, false, false);
+        assert!(r_deeper >= r_shallow);
+        assert!(r_later >= r_deeper);
+        // Table lookup matches floor(BASE + ln(d)*ln(m)/SCALE), then clamp.
+        let expected = (LMR_BASE + 8f64.ln() * 16f64.ln() / LMR_SCALE).floor() as i32;
+        assert_eq!(r_later, expected.min(8 - 2));
+    }
+
+    #[test]
+    fn lmr_improving_reduces_reduction() {
+        let base = late_move_reduction(8, 12, true, false, false, false);
+        let improved = late_move_reduction(8, 12, true, true, false, false);
+        if base > 0 {
+            assert_eq!(improved, (base - 1).max(0));
+        } else {
+            assert_eq!(improved, 0);
+        }
+    }
+
+    #[test]
+    fn lmr_clamped_to_depth_minus_two() {
+        // Large move index → table value can exceed depth-2 at shallow depths.
+        let r = late_move_reduction(3, 60, true, false, false, false);
+        assert!(r <= 3 - 2);
+        assert!(r >= 0);
+    }
+
+    #[test]
+    fn lmr_disabled_returns_zero() {
+        let _guard = LMR_TEST_LOCK.lock().unwrap();
+        let prev = LMR_ENABLED.swap(false, Ordering::Relaxed);
+        assert_eq!(late_move_reduction(8, 12, true, false, false, false), 0);
+        LMR_ENABLED.store(prev, Ordering::Relaxed);
     }
 }

@@ -120,6 +120,28 @@ impl Piece {
         }
     }
 
+    /// Dense index `0..11` for non-empty pieces (`WhitePawn`..=`BlackKing`).
+    ///
+    /// Panics if `self` is [`Piece::Empty`].
+    #[inline]
+    pub const fn slot_index(self) -> usize {
+        match self {
+            Piece::WhitePawn => 0,
+            Piece::WhiteKnight => 1,
+            Piece::WhiteBishop => 2,
+            Piece::WhiteRook => 3,
+            Piece::WhiteQueen => 4,
+            Piece::WhiteKing => 5,
+            Piece::BlackPawn => 6,
+            Piece::BlackKnight => 7,
+            Piece::BlackBishop => 8,
+            Piece::BlackRook => 9,
+            Piece::BlackQueen => 10,
+            Piece::BlackKing => 11,
+            Piece::Empty => panic!("Piece::slot_index on Empty"),
+        }
+    }
+
     /// FEN character for this piece.
     pub const fn to_char(self) -> char {
         match self {

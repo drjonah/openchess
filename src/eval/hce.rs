@@ -1,13 +1,14 @@
-//! Hand-crafted evaluation bootstrap (material).
+//! Hand-crafted evaluation bootstrap (material + midgame PSTs).
 
 use crate::board::Board;
+use crate::eval::pst;
 use crate::types::score::piece_value;
 use crate::types::{Color, PieceType, Value};
 
-/// Side-to-move relative material evaluation.
+/// Side-to-move relative evaluation: material + midgame piece-square tables.
 ///
-/// Sums piece values for White minus Black (kings excluded from the material
-/// balance), then negates when Black is to move.
+/// Sums piece values and PST bonuses for White minus Black (kings excluded
+/// from both material and PST), then negates when Black is to move.
 pub fn evaluate(board: &Board) -> Value {
     let mut white = 0;
     let mut black = 0;
@@ -25,7 +26,7 @@ pub fn evaluate(board: &Board) -> Value {
         black += value * (bb & board.pieces_color(Color::Black)).count() as Value;
     }
 
-    let score = white - black;
+    let score = white - black + pst::pst_midgame(board);
     if board.side_to_move() == Color::White {
         score
     } else {
@@ -75,8 +76,33 @@ mod tests {
         let mut board = Board::empty();
         board.put_piece(Piece::WhiteKing, Square::from_str("e1").unwrap());
         board.put_piece(Piece::BlackKing, Square::from_str("e8").unwrap());
-        board.put_piece(Piece::WhiteQueen, Square::from_str("d4").unwrap());
+        let sq = Square::from_str("d4").unwrap();
+        board.put_piece(Piece::WhiteQueen, sq);
         board.rehash();
-        assert_eq!(evaluate(&board), piece_value(PieceType::Queen));
+        let expected =
+            piece_value(PieceType::Queen) + pst::pst_value(PieceType::Queen, sq, Color::White);
+        assert_eq!(evaluate(&board), expected);
+    }
+
+    #[test]
+    fn knight_on_center_beats_knight_on_rim() {
+        let mut center = Board::empty();
+        center.put_piece(Piece::WhiteKing, Square::from_str("e1").unwrap());
+        center.put_piece(Piece::BlackKing, Square::from_str("e8").unwrap());
+        center.put_piece(Piece::WhiteKnight, Square::from_str("e5").unwrap());
+        center.rehash();
+
+        let mut rim = Board::empty();
+        rim.put_piece(Piece::WhiteKing, Square::from_str("e1").unwrap());
+        rim.put_piece(Piece::BlackKing, Square::from_str("e8").unwrap());
+        rim.put_piece(Piece::WhiteKnight, Square::from_str("a1").unwrap());
+        rim.rehash();
+
+        let center_score = evaluate(&center);
+        let rim_score = evaluate(&rim);
+        assert!(
+            center_score > rim_score,
+            "knight on e5 ({center_score}) should beat a1 ({rim_score})"
+        );
     }
 }

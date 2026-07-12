@@ -458,6 +458,7 @@ impl EngineSession {
             depth: limits.depth.map(|d| d as i32),
             movetime: limits.movetime.or(Some(Duration::from_millis(400))),
             nodes: None,
+            ..Default::default()
         };
         // If only depth is set, don't also force a short movetime.
         let search_limits = if limits.depth.is_some() && limits.movetime.is_none() {
@@ -465,6 +466,7 @@ impl EngineSession {
                 depth: limits.depth.map(|d| d as i32),
                 movetime: None,
                 nodes: None,
+                ..Default::default()
             }
         } else {
             search_limits

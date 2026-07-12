@@ -5,10 +5,12 @@ use super::stack::{Stack, MAX_PLY};
 use super::ThreadData;
 use crate::board::Board;
 use crate::eval;
-use crate::history::history_bonus;
-use crate::movepick::{is_quiet, MovePicker};
+use crate::history::{capture_key, history_bonus, ContSlot, CONT_PLIES};
+use crate::movepick::{is_quiet, HistoryContext, MovePicker};
 use crate::transposition::{Bound, TranspositionTable};
-use crate::types::score::{mated_in, mate_in, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE};
+use crate::types::score::{
+    mated_in, mate_in, value_from_tt, value_to_tt, VALUE_DRAW, VALUE_INFINITE, VALUE_MATE,
+};
 use crate::types::{Move, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,6 +23,7 @@ pub enum NodeType {
 }
 
 const MAX_QUIETS_TRACKED: usize = 64;
+const MAX_CAPTURES_TRACKED: usize = 32;
 
 /// Fail-soft alpha-beta / PVS search.
 pub fn search(
@@ -63,6 +66,10 @@ pub fn search(
     }
     td.stack[ply].clear_pv();
     td.stack[ply].move_count = 0;
+    // Null-move children inherit a sentinel continuation context.
+    if ply > 0 && td.stack[ply - 1].current_move.is_none() {
+        td.stack[ply].cont_slot = ContSlot::NONE;
+    }
 
     let key = board.key();
 
@@ -73,7 +80,7 @@ pub fn search(
         tt_hit = true;
         tt_move = entry.mv;
         if !is_pv && entry.depth as i32 >= depth {
-            let score = entry.score;
+            let score = value_from_tt(entry.score, ply as i32);
             match entry.bound {
                 Bound::Exact => return score,
                 Bound::Lower if score >= beta => return score,
@@ -127,21 +134,41 @@ pub fn search(
     let stm = board.side_to_move();
 
     let killers = td.stack[ply].killers;
-    let mut picker = MovePicker::new(
-        board,
-        if tt_move.is_none() {
-            None
-        } else {
-            Some(tt_move)
-        },
-        &td.history,
-        &killers,
-    );
+    let mut picker = {
+        let mut stack_cont = [ContSlot::NONE; MAX_PLY];
+        for (i, s) in td.stack.iter().enumerate().take(MAX_PLY) {
+            stack_cont[i] = s.cont_slot;
+        }
+        let hctx = HistoryContext::new(&td.history, &killers, &stack_cont, ply, stm);
+        MovePicker::new(
+            board,
+            if tt_move.is_none() {
+                None
+            } else {
+                Some(tt_move)
+            },
+            &hctx,
+        )
+    };
 
     let mut quiets_searched = [Move::NONE; MAX_QUIETS_TRACKED];
     let mut quiet_count = 0usize;
+    let mut captures_searched = [Move::NONE; MAX_CAPTURES_TRACKED];
+    let mut capture_count = 0usize;
 
     while let Some(mv) = picker.next() {
+        // Root hard-abort poll: stop between root moves once the hard bound is hit.
+        if is_root {
+            if let Some(hard) = td.hard_limit {
+                if td.start.elapsed() >= hard {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            }
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+
         move_count += 1;
         td.stack[ply].move_count = move_count;
         td.stack[ply].current_move = mv;
@@ -152,14 +179,24 @@ pub fn search(
             continue;
         }
 
+        let moving_piece = board.piece_on(mv.from());
         board.make(mv);
+        td.stack[ply + 1].cont_slot = ContSlot::new(moving_piece, mv.to());
+        tt.prefetch(board.key());
 
         let mut score: Value;
         let gives_check = board.in_check();
         let new_depth = depth - 1 + if gives_check { 0 } else { 0 }; // extension hook later
 
         let reduction = if move_count > 1 && depth >= 3 {
-            selectivity::late_move_reduction(depth, move_count)
+            selectivity::late_move_reduction(
+                depth,
+                move_count,
+                quiet,
+                improving,
+                in_check,
+                gives_check,
+            )
         } else {
             0
         };
@@ -210,7 +247,10 @@ pub fn search(
 
         board.unmake(mv);
 
-        if stop.load(Ordering::Relaxed) && !is_root {
+        if stop.load(Ordering::Relaxed) {
+            if is_root {
+                break;
+            }
             return best_score.max(alpha);
         }
 
@@ -228,16 +268,37 @@ pub fn search(
                 alpha = score;
                 if alpha >= beta {
                     if quiet {
-                        update_quiet_stats(td, ply, stm, mv, depth, &quiets_searched[..quiet_count]);
+                        update_quiet_stats(
+                            td,
+                            board,
+                            ply,
+                            stm,
+                            mv,
+                            depth,
+                            &quiets_searched[..quiet_count],
+                        );
+                    } else {
+                        update_capture_stats(
+                            td,
+                            board,
+                            mv,
+                            depth,
+                            &captures_searched[..capture_count],
+                        );
                     }
                     break;
                 }
             }
         }
 
-        if quiet && quiet_count < MAX_QUIETS_TRACKED {
-            quiets_searched[quiet_count] = mv;
-            quiet_count += 1;
+        if quiet {
+            if quiet_count < MAX_QUIETS_TRACKED {
+                quiets_searched[quiet_count] = mv;
+                quiet_count += 1;
+            }
+        } else if capture_count < MAX_CAPTURES_TRACKED {
+            captures_searched[capture_count] = mv;
+            capture_count += 1;
         }
     }
 
@@ -259,14 +320,21 @@ pub fn search(
         Bound::Upper
     };
     let _ = tt_hit; // reserved for IIR (P5)
-    tt.store(key, best_move, best_score, depth as i16, bound);
+    tt.store(
+        key,
+        best_move,
+        value_to_tt(best_score, ply as i32),
+        depth as i16,
+        bound,
+    );
 
     best_score
 }
 
-/// Update killers + butterfly history on a quiet beta cutoff.
+/// Update killers + butterfly + continuation history on a quiet beta cutoff.
 fn update_quiet_stats(
     td: &mut ThreadData,
+    board: &Board,
     ply: usize,
     stm: crate::types::Color,
     mv: Move,
@@ -280,12 +348,54 @@ fn update_quiet_stats(
     }
 
     let bonus = history_bonus(depth);
+    let cont = cont_slots_for_ply(&td.stack, ply);
+    let piece = board.piece_on(mv.from());
+
     td.history.update(stm, mv, bonus);
+    td.history.update_continuation(&cont, piece, mv.to(), bonus);
     for &q in previous_quiets {
         if q != mv {
+            let qp = board.piece_on(q.from());
             td.history.update(stm, q, -bonus);
+            td.history.update_continuation(&cont, qp, q.to(), -bonus);
         }
     }
+}
+
+/// Update capture history on a noisy beta cutoff.
+fn update_capture_stats(
+    td: &mut ThreadData,
+    board: &Board,
+    mv: Move,
+    depth: i32,
+    previous_captures: &[Move],
+) {
+    let bonus = history_bonus(depth);
+    if let Some((piece, to, captured)) = capture_key(board, mv) {
+        td.history.capture_update(piece, to, captured, bonus);
+    }
+    for &c in previous_captures {
+        if c != mv {
+            if let Some((piece, to, captured)) = capture_key(board, c) {
+                td.history.capture_update(piece, to, captured, -bonus);
+            }
+        }
+    }
+}
+
+/// Continuation slots at offsets 1/2/4/6 for the current ply.
+#[inline]
+fn cont_slots_for_ply(stack: &[Stack], ply: usize) -> [ContSlot; 4] {
+    let mut out = [ContSlot::NONE; 4];
+    for (i, &d) in CONT_PLIES.iter().enumerate() {
+        if ply + 1 >= d {
+            let idx = ply + 1 - d;
+            if idx < stack.len() {
+                out[i] = stack[idx].cont_slot;
+            }
+        }
+    }
+    out
 }
 
 /// Quiescence search: stand-pat + captures (P2-03).
@@ -322,7 +432,7 @@ pub fn qsearch(
     if let Some(entry) = tt.probe(key) {
         tt_move = entry.mv;
         if entry.depth >= 0 {
-            let score = entry.score;
+            let score = value_from_tt(entry.score, ply as i32);
             match entry.bound {
                 Bound::Exact => return score,
                 Bound::Lower if score >= beta => return score,
@@ -337,7 +447,13 @@ pub fn qsearch(
     } else {
         let stand_pat = eval::evaluate(board);
         if stand_pat >= beta {
-            tt.store(key, Move::NONE, stand_pat, 0, Bound::Lower);
+            tt.store(
+                key,
+                Move::NONE,
+                value_to_tt(stand_pat, ply as i32),
+                0,
+                Bound::Lower,
+            );
             return stand_pat;
         }
         if stand_pat > alpha {
@@ -359,7 +475,13 @@ pub fn qsearch(
     };
     let killers = td.stack[ply].killers;
     let mut picker = if in_check {
-        MovePicker::evasion(board, tt_move_opt, &td.history, &killers)
+        let mut stack_cont = [ContSlot::NONE; MAX_PLY];
+        for (i, s) in td.stack.iter().enumerate().take(MAX_PLY) {
+            stack_cont[i] = s.cont_slot;
+        }
+        let hctx =
+            HistoryContext::new(&td.history, &killers, &stack_cont, ply, board.side_to_move());
+        MovePicker::evasion(board, tt_move_opt, &hctx)
     } else {
         MovePicker::qsearch(board, tt_move_opt)
     };
@@ -381,6 +503,7 @@ pub fn qsearch(
         }
 
         board.make(mv);
+        tt.prefetch(board.key());
         let next_checks = if in_check { checks + 1 } else { 0 };
         let score = -qsearch(board, td, tt, stop, ply + 1, -beta, -alpha, next_checks);
         board.unmake(mv);
@@ -416,7 +539,13 @@ pub fn qsearch(
     } else {
         Bound::Upper
     };
-    tt.store(key, best_move, best_score, 0, bound);
+    tt.store(
+        key,
+        best_move,
+        value_to_tt(best_score, ply as i32),
+        0,
+        bound,
+    );
 
     best_score
 }

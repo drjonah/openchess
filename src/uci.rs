@@ -148,14 +148,53 @@ fn parse_go(line: &str) -> Limits {
                 }
                 i += 2;
             }
+            "wtime" => {
+                if let Some(ms) = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                    limits.wtime = Some(Duration::from_millis(ms));
+                }
+                i += 2;
+            }
+            "btime" => {
+                if let Some(ms) = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                    limits.btime = Some(Duration::from_millis(ms));
+                }
+                i += 2;
+            }
+            "winc" => {
+                if let Some(ms) = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                    limits.winc = Some(Duration::from_millis(ms));
+                }
+                i += 2;
+            }
+            "binc" => {
+                if let Some(ms) = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok()) {
+                    limits.binc = Some(Duration::from_millis(ms));
+                }
+                i += 2;
+            }
+            "movestogo" => {
+                if let Some(n) = tokens.get(i + 1).and_then(|s| s.parse().ok()) {
+                    limits.movestogo = Some(n);
+                }
+                i += 2;
+            }
             "infinite" => {
-                limits.depth = Some(64);
+                limits.infinite = true;
                 i += 1;
             }
             _ => i += 1,
         }
     }
-    if limits.depth.is_none() && limits.movetime.is_none() && limits.nodes.is_none() {
+    // Default Move Overhead matches config / time::DEFAULT_MOVE_OVERHEAD (50ms).
+    limits.move_overhead = crate::time::DEFAULT_MOVE_OVERHEAD;
+
+    // Do not default depth when clocks, movetime, nodes, or infinite are set.
+    if limits.depth.is_none()
+        && limits.movetime.is_none()
+        && limits.nodes.is_none()
+        && !limits.has_clock()
+        && !limits.infinite
+    {
         limits.depth = Some(6);
     }
     limits

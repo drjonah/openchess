@@ -7,6 +7,7 @@ pub mod history;
 pub mod lookup;
 pub mod movepick;
 pub mod search;
+pub mod time;
 pub mod tools;
 pub mod transposition;
 pub mod tui;

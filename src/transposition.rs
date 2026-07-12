@@ -1,6 +1,9 @@
 //! Clustered transposition table (P4).
 //!
-//! Mate scores are stored as-is for now; ply adjustment lands with P4-03.
+//! Scores are stored as opaque [`Value`]s. Callers (search) must ply-adjust
+//! mate/TB scores via [`crate::types::score::value_to_tt`] /
+//! [`crate::types::score::value_from_tt`] around [`TranspositionTable::store`] /
+//! [`TranspositionTable::probe`].
 
 use crate::types::{Key, Move, Value};
 
@@ -101,6 +104,9 @@ impl TranspositionTable {
     }
 
     /// Probe for an entry matching `key`.
+    ///
+    /// Returns the raw stored score; apply [`crate::types::score::value_from_tt`]
+    /// at the search ply before using mate/TB scores.
     pub fn probe(&self, key: Key) -> Option<TtEntry> {
         let cluster = &self.clusters[self.cluster_index(key)];
         for entry in &cluster.entries {
@@ -111,7 +117,32 @@ impl TranspositionTable {
         None
     }
 
+    /// Hint that `key` will be probed soon (typically right after `make`).
+    ///
+    /// Architecture-specific prefetch when available; otherwise a no-op.
+    /// Correctness-neutral — safe to call unconditionally.
+    #[inline]
+    pub fn prefetch(&self, key: Key) {
+        let idx = self.cluster_index(key);
+        let ptr = self.clusters.as_ptr().wrapping_add(idx) as *const u8;
+        // Touch the address so the computation is not dead on no-op targets.
+        let _ = ptr;
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: prefetch is a pure hint; `ptr` points into our allocation.
+            unsafe {
+                core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                    ptr as *const i8,
+                );
+            }
+        }
+        // aarch64 `_prefetch` is still unstable (`stdarch_aarch64_prefetch`); no-op on ARM for now.
+    }
+
     /// Store an entry, replacing the least valuable slot in the cluster.
+    ///
+    /// `score` is stored as-is; callers should pass [`crate::types::score::value_to_tt`]
+    /// for mate/TB scores.
     pub fn store(&mut self, key: Key, mv: Move, score: Value, depth: i16, bound: Bound) {
         let age = self.age;
         let idx = self.cluster_index(key);

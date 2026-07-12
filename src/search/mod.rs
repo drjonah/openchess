@@ -11,16 +11,49 @@ use std::time::{Duration, Instant};
 
 use crate::board::Board;
 use crate::history::HistoryTables;
+use crate::time::{TimeBudget, DEFAULT_MOVE_OVERHEAD};
 use crate::transposition::TranspositionTable;
 use crate::types::score::VALUE_INFINITE;
 use crate::types::{Move, Value};
 
 /// Search limits from UCI / TUI.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Limits {
     pub depth: Option<i32>,
     pub movetime: Option<Duration>,
     pub nodes: Option<u64>,
+    pub wtime: Option<Duration>,
+    pub btime: Option<Duration>,
+    pub winc: Option<Duration>,
+    pub binc: Option<Duration>,
+    pub movestogo: Option<u32>,
+    pub infinite: bool,
+    /// GUI/network latency reserve (default 50ms; see `time::DEFAULT_MOVE_OVERHEAD`).
+    pub move_overhead: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            depth: None,
+            movetime: None,
+            nodes: None,
+            wtime: None,
+            btime: None,
+            winc: None,
+            binc: None,
+            movestogo: None,
+            infinite: false,
+            move_overhead: DEFAULT_MOVE_OVERHEAD,
+        }
+    }
+}
+
+impl Limits {
+    /// True when a clock was provided for either side.
+    pub fn has_clock(&self) -> bool {
+        self.wtime.is_some() || self.btime.is_some()
+    }
 }
 
 /// Result of a completed (or aborted) search.
@@ -40,6 +73,10 @@ pub struct ThreadData {
     pub stack: Vec<Stack>,
     pub root_moves: Vec<RootMove>,
     pub history: HistoryTables,
+    /// Search start time (for hard-limit polls at the root).
+    pub start: Instant,
+    /// Hard elapsed-time abort bound, if any.
+    pub hard_limit: Option<Duration>,
 }
 
 impl ThreadData {
@@ -49,6 +86,8 @@ impl ThreadData {
             stack: vec![Stack::default(); MAX_PLY],
             root_moves: Vec::new(),
             history: HistoryTables::new(),
+            start: Instant::now(),
+            hard_limit: None,
         }
     }
 }
@@ -76,6 +115,9 @@ pub fn go(
 
     let mut td = ThreadData::new();
     let start = Instant::now();
+    let budget = TimeBudget::from_limits(&limits, board.side_to_move(), limits.move_overhead);
+    td.start = start;
+    td.hard_limit = budget.map(|b| b.hard);
 
     // Root move list.
     let legal = board.legal_moves();
@@ -112,9 +154,14 @@ pub fn go(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        if let Some(mt) = limits.movetime {
-            if start.elapsed() >= mt {
+        // Soft: end ID without setting stop. Hard: abort via stop flag.
+        if let Some(b) = budget {
+            let elapsed = start.elapsed();
+            if b.hard_exceeded(elapsed) {
                 stop.store(true, Ordering::Relaxed);
+                break;
+            }
+            if b.soft_exceeded(elapsed) {
                 break;
             }
         }
@@ -199,9 +246,9 @@ pub fn go(
             cb(depth, score, td.nodes, start.elapsed(), &pv_str);
         }
 
-        // Soft stop between iterations.
-        if let Some(mt) = limits.movetime {
-            if start.elapsed() >= mt {
+        // Soft stop between completed iterations (do not set stop).
+        if let Some(b) = budget {
+            if b.soft_exceeded(start.elapsed()) {
                 break;
             }
         }
@@ -384,6 +431,50 @@ mod tests {
     }
 
     #[test]
+    fn lmr_reduces_nodes_at_fixed_depth() {
+        init();
+        let _guard = selectivity::LMR_TEST_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+
+        selectivity::LMR_ENABLED.store(false, Ordering::Relaxed);
+        let mut board_off = Board::startpos();
+        let mut tt_off = TranspositionTable::new(16);
+        let off = go(
+            &mut board_off,
+            Limits {
+                depth: Some(6),
+                ..Default::default()
+            },
+            &mut tt_off,
+            &stop,
+            None,
+        );
+
+        selectivity::LMR_ENABLED.store(true, Ordering::Relaxed);
+        let mut board_on = Board::startpos();
+        let mut tt_on = TranspositionTable::new(16);
+        let on = go(
+            &mut board_on,
+            Limits {
+                depth: Some(6),
+                ..Default::default()
+            },
+            &mut tt_on,
+            &stop,
+            None,
+        );
+
+        assert!(
+            on.nodes < off.nodes,
+            "LMR should reduce nodes: on={} off={}",
+            on.nodes,
+            off.nodes
+        );
+        assert!(!on.best_move.is_none());
+        assert!(board_on.legal_moves().contains(&on.best_move));
+    }
+
+    #[test]
     fn nmp_inactive_in_check_still_legal() {
         init();
         // Rook check on the a-file; Black must resolve check (NMP must not fire).
@@ -400,6 +491,40 @@ mod tests {
         let mut board = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
         assert_eq!(board.non_pawn_material(Color::White), 0);
         let result = go_depth(&mut board, 5);
+        assert!(!result.best_move.is_none());
+        assert!(board.legal_moves().contains(&result.best_move));
+    }
+
+    #[test]
+    fn clock_search_respects_hard() {
+        init();
+        let mut board = Board::startpos();
+        let mut tt = TranspositionTable::new(8);
+        let stop = AtomicBool::new(false);
+        let overhead = Duration::from_millis(50);
+        let wtime = Duration::from_millis(200);
+        let result = go(
+            &mut board,
+            Limits {
+                wtime: Some(wtime),
+                winc: Some(Duration::from_millis(0)),
+                move_overhead: overhead,
+                ..Default::default()
+            },
+            &mut tt,
+            &stop,
+            None,
+        );
+        let hard = wtime.saturating_sub(overhead);
+        // Allow modest overrun from check granularity / finishing a root move.
+        assert!(
+            result.time < hard + overhead + Duration::from_millis(150),
+            "elapsed {:?} exceeded hard {:?} + slack (best {} depth {})",
+            result.time,
+            hard,
+            result.best_move,
+            result.depth
+        );
         assert!(!result.best_move.is_none());
         assert!(board.legal_moves().contains(&result.best_move));
     }
