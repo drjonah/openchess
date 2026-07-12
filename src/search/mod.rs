@@ -630,10 +630,8 @@ mod tests {
             None,
         );
         assert!(board.legal_moves().contains(&aborted.best_move));
-        if let Some(mv) = tt_move {
-            if !mv.is_none() {
-                assert_eq!(aborted.best_move, mv, "expected TT move on zero-depth abort");
-            }
+        if let Some(mv) = tt_move.filter(|m| !m.is_none()) {
+            assert_eq!(aborted.best_move, mv, "expected TT move on zero-depth abort");
         }
         let _ = warm;
     }
@@ -726,6 +724,7 @@ mod tests {
     #[test]
     fn nmp_reduces_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _guard = selectivity::NMP_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
 
@@ -770,6 +769,7 @@ mod tests {
     #[test]
     fn lmr_reduces_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _guard = selectivity::LMR_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
 
@@ -814,6 +814,7 @@ mod tests {
     #[test]
     fn rfp_razoring_reduce_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _rfp = selectivity::RFP_TEST_LOCK.lock().unwrap();
         let _razor = selectivity::RAZORING_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
@@ -861,6 +862,7 @@ mod tests {
     #[test]
     fn move_loop_pruning_reduces_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _lmp = selectivity::LMP_TEST_LOCK.lock().unwrap();
         let _fut = selectivity::FUTILITY_TEST_LOCK.lock().unwrap();
         let _hist = selectivity::HISTORY_PRUNE_TEST_LOCK.lock().unwrap();
@@ -914,6 +916,7 @@ mod tests {
     #[test]
     fn probcut_iir_reduce_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _pc = selectivity::PROBCUT_TEST_LOCK.lock().unwrap();
         let _iir = selectivity::IIR_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
@@ -961,6 +964,7 @@ mod tests {
     #[test]
     fn singular_extensions_visible_in_deep_search() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _guard = selectivity::SINGULAR_TEST_LOCK.lock().unwrap();
         selectivity::SINGULAR_ENABLED.store(true, Ordering::Relaxed);
         // Tactical midgame: deeper NonPV nodes with TT moves from prior ID iters.

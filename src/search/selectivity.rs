@@ -21,6 +21,25 @@ pub static NMP_ENABLED: AtomicBool = AtomicBool::new(true);
 #[cfg(test)]
 pub static NMP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Global serialization for *all* selectivity A/B tests.
+///
+/// Every search reads every toggle, but individual A/B tests only lock their own
+/// feature lock. Without a shared gate, e.g. the LMR test can flip `LMR_ENABLED`
+/// while the NMP test is mid-search, corrupting its node counts. All
+/// toggle-manipulating tests (and the bench signature) acquire this first so at
+/// most one runs at a time. Poison-tolerant via [`ab_test_guard`] so one genuine
+/// failure does not cascade into unrelated `PoisonError`s.
+#[cfg(test)]
+pub static SELECTIVITY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the global [`SELECTIVITY_TEST_LOCK`], tolerating poisoning.
+#[cfg(test)]
+pub fn ab_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    SELECTIVITY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Runtime toggle for late-move reductions (tests flip this for A/B node counts).
 pub static LMR_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -595,6 +614,7 @@ mod tests {
     #[test]
     fn nmp_skipped_when_disabled() {
         init();
+        let _ab = ab_test_guard();
         let _guard = NMP_TEST_LOCK.lock().unwrap();
         let prev = NMP_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
@@ -680,6 +700,7 @@ mod tests {
 
     #[test]
     fn rfp_disabled_returns_none() {
+        let _ab = ab_test_guard();
         let _guard = RFP_TEST_LOCK.lock().unwrap();
         let prev = RFP_ENABLED.swap(false, Ordering::Relaxed);
         assert!(try_rfp(4, 0, 10_000, false).is_none());
@@ -710,6 +731,7 @@ mod tests {
     #[test]
     fn razoring_triggers_on_very_low_eval() {
         init();
+        let _ab = ab_test_guard();
         let _guard = RAZORING_TEST_LOCK.lock().unwrap();
         RAZORING_ENABLED.store(true, Ordering::Relaxed);
         let mut board = Board::startpos();
@@ -733,6 +755,7 @@ mod tests {
     #[test]
     fn razoring_disabled_returns_none() {
         init();
+        let _ab = ab_test_guard();
         let _guard = RAZORING_TEST_LOCK.lock().unwrap();
         let prev = RAZORING_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
@@ -757,6 +780,7 @@ mod tests {
     #[test]
     fn singular_disabled_returns_none() {
         init();
+        let _ab = ab_test_guard();
         let _guard = SINGULAR_TEST_LOCK.lock().unwrap();
         let prev = SINGULAR_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
@@ -836,6 +860,7 @@ mod tests {
 
     #[test]
     fn iir_disabled_keeps_depth() {
+        let _ab = ab_test_guard();
         let _guard = IIR_TEST_LOCK.lock().unwrap();
         let prev = IIR_ENABLED.swap(false, Ordering::Relaxed);
         assert_eq!(apply_iir(8, false, false), 8);
@@ -953,6 +978,7 @@ mod tests {
 
     #[test]
     fn lmr_disabled_returns_zero() {
+        let _ab = ab_test_guard();
         let _guard = LMR_TEST_LOCK.lock().unwrap();
         let prev = LMR_ENABLED.swap(false, Ordering::Relaxed);
         assert_eq!(late_move_reduction(8, 12, true, false, false, false), 0);
