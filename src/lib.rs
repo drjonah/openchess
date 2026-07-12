@@ -1,6 +1,7 @@
 //! OpenChess — open-source chess engine library.
 
 pub mod board;
+pub mod book;
 pub mod config;
 pub mod eval;
 pub mod history;
