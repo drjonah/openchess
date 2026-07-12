@@ -8,6 +8,7 @@ use super::game::{
 };
 use super::san::format_san;
 use crate::board::{Board, GameResult};
+use crate::book::{Book, BookConfig, BookRng};
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
 use crate::types::{Color, Move, Piece, PieceType, Square, Value};
@@ -157,6 +158,10 @@ pub struct EngineSession {
     /// After a PvB→BvB takeover (`x`), this color keeps shared `bot.*` strength
     /// instead of switching to per-side Bot vs Bot settings.
     bvb_shared_side: Option<Color>,
+    /// Opening-book settings; a book is built per bot move (P10-02 / TUI-04).
+    book_config: BookConfig,
+    /// PRNG for weighted book selection (varied bot play).
+    book_rng: BookRng,
 }
 
 /// Convert a side-to-move-relative search score to White-relative centipawns.
@@ -200,6 +205,8 @@ impl EngineSession {
             analysis_stm: None,
             analysis_limits: config.analysis_go_limits(),
             bvb_shared_side: None,
+            book_config: config.book.clone(),
+            book_rng: BookRng::from_entropy(),
         }
     }
 
@@ -214,6 +221,7 @@ impl EngineSession {
         self.flipped = config.tui.flip_board;
         self.eval_bar_forced = config.tui.show_eval_bar;
         self.analysis_limits = config.analysis_go_limits();
+        self.book_config = config.book.clone();
     }
 
     pub fn set_flipped(&mut self, flipped: bool) {
@@ -913,6 +921,36 @@ impl EngineSession {
         }
     }
 
+    /// Probe the opening book before searching. On a hit, play the move
+    /// immediately and report it; returns `true` when the book handled the move.
+    ///
+    /// Only used when the bot actually plays (never in Analyze), so book moves
+    /// do not hijack manual analysis (TUI-04).
+    fn try_book_move(&mut self) -> bool {
+        if !self.search_applies_move() {
+            return false;
+        }
+        let book = Book::from_config(&self.book_config);
+        let ply = self.move_stack.len() as u32;
+        let Some(mv) = book.probe(&self.board, ply, &mut self.book_rng) else {
+            return false;
+        };
+        self.search_stm = Some(self.board.side_to_move());
+        self.info = SearchInfo::default();
+        match self.play_move(mv) {
+            Ok(()) => {
+                self.info.bestmove = None;
+                if !self.is_game_over() {
+                    self.status = format!("Book: {mv}");
+                }
+            }
+            Err(e) => {
+                self.status = format!("Book move failed: {e}");
+            }
+        }
+        true
+    }
+
     fn start_bot_search(&mut self, limits: GoLimits) {
         if self.info.thinking {
             self.status = "Already thinking".into();
@@ -921,6 +959,9 @@ impl EngineSession {
         let result = self.board.game_result();
         if result.is_over() {
             self.status = result.status_message().into();
+            return;
+        }
+        if self.try_book_move() {
             return;
         }
         self.apply_on_finish = self.search_applies_move();
@@ -1528,6 +1569,8 @@ mod tests {
     #[test]
     fn eval_search_does_not_block_bot_go() {
         let mut s = EngineSession::new();
+        // Disable the book so this exercises the search-threading path.
+        s.book_config.enabled = false;
         s.set_mode(PlayMode::PlayerVsBot {
             human: Color::White,
         });
@@ -1553,6 +1596,62 @@ mod tests {
 
         s.stop_thinking_quiet();
         s.stop_eval_quiet();
+    }
+
+    #[test]
+    fn bot_plays_book_move_instantly() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::BotVsBot);
+        assert_eq!(s.move_stack.len(), 0);
+
+        // Book is enabled by default; the first BvB move should come from book
+        // with no background search spawned.
+        s.go(GoLimits {
+            depth: Some(20),
+            movetime: Some(Duration::from_millis(5_000)),
+        });
+        assert!(!s.is_thinking(), "book move should not spawn a search");
+        assert!(s.live.is_none());
+        assert_eq!(s.move_stack.len(), 1, "book move should be applied");
+        assert!(s.status().starts_with("Book:"), "status: {}", s.status());
+        let played = s.last_move().unwrap();
+        assert!(!matches!(
+            played.to_string().as_str(),
+            "a2a3" | "a2a4" | "h2h3" | "h2h4"
+        ));
+    }
+
+    #[test]
+    fn disabled_book_falls_through_to_search() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.book_config.enabled = false;
+        s.set_mode(PlayMode::BotVsBot);
+        s.go(GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(200)),
+        });
+        // No book: a real search is spawned (thinking) and no move applied yet.
+        assert!(s.is_thinking());
+        assert!(s.live.is_some());
+        assert_eq!(s.move_stack.len(), 0);
+        s.stop_thinking_quiet();
+    }
+
+    #[test]
+    fn analyze_mode_never_uses_book() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::Analyze);
+        s.go(GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(200)),
+        });
+        // Analyze must search (for hints), never auto-play a book move.
+        assert!(s.is_thinking());
+        assert_eq!(s.move_stack.len(), 0);
+        s.stop_thinking_quiet();
     }
 
     #[test]

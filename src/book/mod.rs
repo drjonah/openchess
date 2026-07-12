@@ -22,7 +22,7 @@ use crate::types::{Key, Move};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// A single weighted book candidate, stored as a UCI string and resolved (and
 /// legality-checked) against the live position at probe time.
@@ -243,16 +243,15 @@ pub(crate) fn merge_tables(dst: &mut BookTable, src: BookTable) {
     }
 }
 
-/// Cached embedded default table (mini first-move table + EPD graph).
+/// Build the embedded default table (mini first-move table + EPD graph).
+///
+/// Built fresh per call (cheap, and only on bot moves) rather than cached, so a
+/// build attempted before [`crate::lookup::initialize`] can never poison a
+/// shared table for the rest of the process.
 fn default_table() -> Arc<BookTable> {
-    static TABLE: OnceLock<Arc<BookTable>> = OnceLock::new();
-    TABLE
-        .get_or_init(|| {
-            let mut table = mini::table();
-            merge_tables(&mut table, epd::embedded_table());
-            Arc::new(table)
-        })
-        .clone()
+    let mut table = mini::table();
+    merge_tables(&mut table, epd::embedded_table());
+    Arc::new(table)
 }
 
 /// Load a book file by extension. Only Polyglot `.bin` is a placeholder here
