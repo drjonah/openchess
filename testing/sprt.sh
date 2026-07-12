@@ -66,9 +66,12 @@ echo "    B=$ENGINE_B"
 echo "    st=${ST}s games=$GAMES elo0=$ELO0 elo1=$ELO1"
 
 # Each engine gets a unique name so cutechess can report results clearly.
+# OwnBook is forced off: strength SPRT must measure search + eval only, with the
+# EPD suite (below) providing fixed, shared openings (P10-07). The interactive
+# TUI / GUI play path keeps OwnBook on by default.
 cutechess-cli \
-  -engine name=OpenChessA cmd="$ENGINE_A" option.Hash="$HASH" \
-  -engine name=OpenChessB cmd="$ENGINE_B" option.Hash="$HASH" \
+  -engine name=OpenChessA cmd="$ENGINE_A" option.Hash="$HASH" option.OwnBook=false \
+  -engine name=OpenChessB cmd="$ENGINE_B" option.Hash="$HASH" option.OwnBook=false \
   -each proto=uci tc="${ST}+0.1" \
   -openings file="$BOOK" format=epd order=random \
   -games "$GAMES" \
