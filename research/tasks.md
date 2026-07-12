@@ -715,6 +715,28 @@ flowchart TB
   - **Research:** [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing) · chesswiki Opening book (testing)  
   - **Note:** `sprt.sh` now passes `option.OwnBook=false` (EPD seeding unchanged); `testing/README.md` documents the SPRT-vs-play separation.
 
+- [ ] **P10-08** — Curated opening repertoire (deep named lines)  
+  - **Deps:** P10-01, P10-02  
+  - **Parallel-ok:** P10-05  
+  - **Deliverable:** Extend the embedded book beyond first moves with specific, named main lines to a useful depth (~8–12 plies) for **both colors** — e.g. White: `1.e4` (Ruy Lopez / Italian), `1.d4` (QGD); Black vs `1.e4`: Sicilian (a chosen main line, e.g. Najdorf), vs `1.d4`: KID / QGD. Author lines as UCI/SAN sequences with per-branch weights + a human-readable opening name; replay from startpos (no Zobrist key literals). Keep it separate from the shallow default so play/SPRT behavior is unchanged unless selected.  
+  - **Acceptance:** From startpos the engine follows a complete named main line for ≥ 8 plies before search takes over; every line is legal and reaches its intended tabiya; regression test replays each line and asserts the final position/opening name.  
+  - **Research:** [openings.md §3 Option B](./openings.md#option-b--tiny-hardcoded-first-move-table-recommended-short-term) · [openings.md §5.1](./openings.md#51-what-to-include-early) · chesswiki Opening Book  
+  - **Note:** Follow-up feature (do not fold into the shallow default). Today's book only covers White move 1 + Black's first reply; this task adds real theory depth. Consider whether to hand-curate (this task) or defer to a loaded Polyglot book (P10-05).
+
+- [ ] **P10-09** — Repertoire authoring format + validation  
+  - **Deps:** P10-08  
+  - **Parallel-ok:** P10-05  
+  - **Deliverable:** A clear in-tree format for defining repertoire lines (name, move sequence, weights, side) plus a validation harness that replays every authored line, checks legality and transposition consistency (same key ⇒ merged candidates), and flags dead/duplicate branches. Document how to add or edit an opening.  
+  - **Acceptance:** `cargo test` fails if any authored line is illegal or mislabeled; contributor docs explain adding a new opening in one place.  
+  - **Research:** [openings.md §5.1](./openings.md#51-what-to-include-early)
+
+- [ ] **P10-10** — Repertoire selection & variety policy  
+  - **Deps:** P10-08  
+  - **Parallel-ok:** P10-05, P10-06  
+  - **Deliverable:** Policy + config for choosing among competing "best" lines: per-side repertoire selection (e.g. style: solid vs aggressive), weighting between equally-theoretical branches, and anti-repetition so the bot does not play the identical game every time. Expose via config/UCI where it makes sense.  
+  - **Acceptance:** Over N games from the same start the bot varies its repertoire per the configured weights; a fixed seed still reproduces a game for testing.  
+  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module) · chesswiki Opening Book (move selection)
+
 ---
 
 ## Openings (future)
