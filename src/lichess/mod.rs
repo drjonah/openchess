@@ -1,0 +1,35 @@
+//! Lichess Bot API client (feature = `"lichess"`).
+//!
+//! Headless daemon: NDJSON event stream + REST helpers. Game play lands in P9-03.
+
+mod client;
+pub mod cli;
+mod events;
+
+pub use client::Client;
+pub use events::StreamEvent;
+
+/// Errors from Lichess HTTP or JSON parsing.
+#[derive(Debug)]
+pub enum LichessError {
+    MissingToken(String),
+    Http(String),
+    Json(String),
+    RateLimited,
+}
+
+impl std::fmt::Display for LichessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingToken(var) => write!(
+                f,
+                "missing {var} environment variable (see .env.example)"
+            ),
+            Self::Http(m) => write!(f, "HTTP error: {m}"),
+            Self::Json(m) => write!(f, "JSON error: {m}"),
+            Self::RateLimited => write!(f, "rate limited (HTTP 429)"),
+        }
+    }
+}
+
+impl std::error::Error for LichessError {}

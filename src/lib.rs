@@ -17,4 +17,7 @@ pub mod uci;
 #[cfg(feature = "chesscom")]
 pub mod chesscom;
 
+#[cfg(feature = "lichess")]
+pub mod lichess;
+
 pub use types::*;

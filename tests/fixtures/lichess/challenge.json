@@ -1,0 +1,1 @@
+{"type":"challenge","challenge":{"id":"uGK4MHaQ","status":"created","speed":"rapid","rated":false,"variant":{"key":"standard"},"challenger":{"id":"bernstein-2ply","name":"bernstein-2ply","rating":1262},"destUser":{"id":"openchess-bot","name":"OpenChessBot"},"timeControl":{"type":"clock","limit":300,"increment":1,"show":"5+1"},"color":"random","finalColor":"white"}}
