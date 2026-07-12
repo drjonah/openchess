@@ -2,7 +2,7 @@
 
 > **Audience:** agents implementing OpenChess in parallel.
 > **Paradigm:** Stockfish-family (bitboards + PVS + selective search + NNUE + Lazy SMP + SPRT).
-> **Research sources:** [chesswiki.md](./chesswiki.md) · [reckless.md](./reckless.md) · [stockfish.md](./stockfish.md) · [LICHESS.md](./LICHESS.md) (P9) · [openings.md](./openings.md) (P10)
+> **Research sources:** [chesswiki.md](./chesswiki.md) · [reckless.md](./reckless.md) · [stockfish.md](./stockfish.md) · [LICHESS.md](./LICHESS.md) (P9) · [openings.md](./openings.md) (P10) · [ARENA.md](./ARENA.md) (P11)
 > **Out of scope here:** speculative ideas in [uniqueideas.md](./uniqueideas.md) — separate track.
 >
 > **Implementation language: Rust.** Module layout and ownership: [ARCHITECTURE.md](../ARCHITECTURE.md). Do not treat Stockfish/Reckless magic constants as gospel — copy structure, tune with SPRT.
@@ -579,7 +579,9 @@ flowchart TB
 
 **Binary:** `openchess arena …` (alongside `tui`, `uci`, `lichess`).
 
-**Research:** [chesswiki Engine Testing](./chesswiki.md#7-measurement--elo) (informal dev runs vs SPRT) · ARCHITECTURE §3 dual fronts · `testing/sprt.sh` (contrast: batch unattended vs live inspect)
+**Plan / design doc:** [ARENA.md](./ARENA.md) — module layout (`src/arena/`), slot/runner/snapshot model, scheduler, inspector TUI, export, and phased build order. Read it before starting any P11 task.
+
+**Research:** [ARENA.md](./ARENA.md) · [chesswiki Engine Testing](./chesswiki.md#7-measurement--elo) (informal dev runs vs SPRT) · ARCHITECTURE §3 dual fronts · `testing/sprt.sh` (contrast: batch unattended vs live inspect)
 
 ### Tasks
 
@@ -588,63 +590,63 @@ flowchart TB
   - **Parallel-ok:** P10-02, TUI-04  
   - **Deliverable:** `src/arena/slot.rs`, `src/arena/runner.rs` — `Arena` with `N` slots; each slot: `Board`, SAN/UCI move list, `SideStrength` white/black, status (`Thinking` / `Idle` / `Finished` / `Paused`); runner tick advances one thinking slot at a time (fair scheduling)  
   - **Acceptance:** `Arena::new(4)` plays four independent games to mate/draw/stalemate without illegal moves; slots do not share board state  
-  - **Research:** `src/tui/session.rs` `EngineSession` · `config::SideStrength`
+  - **Research:** [ARENA.md §4–§5](./ARENA.md#4-module-layout-proposed) (module layout + slot/runner model) · [ARENA.md §10](./ARENA.md#10-concurrency--correctness-invariants) (isolation invariants) · `src/tui/session.rs` `EngineSession` · `config::SideStrength`
 
 - [ ] **P11-02** — Headless CLI batch mode  
   - **Deps:** P11-01  
   - **Parallel-ok:** P11-03  
   - **Deliverable:** `openchess arena run --games N [--depth D] [--movetime MS] [--pgn-dir DIR]` — headless; optional per-side overrides via flags or TOML; stdout summary (W/D/L, avg plies)  
   - **Acceptance:** `arena run --games 10` completes 10 games unattended; PGN files written when `--pgn-dir` set; exit 0  
-  - **Research:** cutechess-cli batch patterns (no subprocess — in-process only)
+  - **Research:** [ARENA.md §6](./ARENA.md#6-cli-surface) (CLI surface) · [ARENA.md §12](./ARENA.md#12-phased-build-order-maps-to-p11-tasks) (Phase A) · cutechess-cli batch patterns (no subprocess — in-process only)
 
 - [ ] **P11-03** — Live snapshot API (inspect without blocking play)  
   - **Deps:** P11-01, P6-01  
   - **Parallel-ok:** P11-04  
   - **Deliverable:** `GameSnapshot` — FEN, move list, side to move, last search `SearchInfo` (depth/score/PV/nodes/time), **White-relative eval cp**, **material balance** (piece count + centipawn sum), game status, slot id  
   - **Acceptance:** Snapshot readable while another slot is thinking; material matches manual count on test positions; eval updates after each move  
-  - **Research:** `tui/session.rs` `SearchInfo`, `live_eval_cp` · P6 material eval
+  - **Research:** [ARENA.md §5.3](./ARENA.md#53-gamesnapshot-snapshotrs-p11-03) (`GameSnapshot`) · `tui/session.rs` `SearchInfo`, `live_eval_cp` · P6 material eval
 
 - [ ] **P11-04** — Inspector TUI (game list + drill-down)  
   - **Deps:** P11-03, TUI-01  
   - **Parallel-ok:** P11-05, P11-06  
   - **Deliverable:** `openchess arena` (no subcommand) or `arena watch` — ratatui layout: **game list** (id, ply, last move, eval, status) + **detail pane** (board, full move list, eval bar, material line, engine panel when thinking); keys: select slot, back to list, flip board  
   - **Acceptance:** With 4 running games, user can switch between slots mid-game and see current position + eval; returning to list shows all slots still advancing  
-  - **Research:** TUI-01 board render · TUI-03 engine panel · ARCHITECTURE §7
+  - **Research:** [ARENA.md §7](./ARENA.md#7-inspector-tui-p11-04) (inspector layout + non-blocking rule) · TUI-01 board render · TUI-03 engine panel · ARCHITECTURE §7
 
 - [ ] **P11-05** — Runtime strength editing per slot  
   - **Deps:** P11-01, P11-04  
   - **Parallel-ok:** P11-06  
   - **Deliverable:** Inspector commands / settings overlay: edit White and Black `depth` + `movetime_ms` per slot (or apply a named **profile** preset); changes take effect on that side's **next** move; optional “mirror to all slots”  
   - **Acceptance:** Mid-game, raising Black depth from 8→20 visible in next Black think; lowering White movetime speeds White replies; config matches `config.json` `SideStrength` shape  
-  - **Research:** `src/config.rs` `SideStrength`, `play_go_limits`
+  - **Research:** [ARENA.md §8.1](./ARENA.md#81-per-slot-strength-editing-p11-05) (edit-on-next-move timing) · `src/config.rs` `SideStrength`, `play_go_limits`
 
 - [ ] **P11-06** — Per-slot game control  
   - **Deps:** P11-01, P11-04  
   - **Parallel-ok:** P11-05, P11-07  
   - **Deliverable:** Pause / resume slot; restart slot (new game, same strengths); step one move (manual advance when paused); abort slot  
   - **Acceptance:** Paused slot stops making moves; other slots continue; restart clears history and returns to startpos  
-  - **Research:** TUI session undo/new-game patterns
+  - **Research:** [ARENA.md §8.2–§8.3](./ARENA.md#82-per-slot-game-control-p11-06) (control + adjudication) · TUI session undo/new-game patterns
 
 - [ ] **P11-07** — Match profiles + slot assignment  
   - **Deps:** P11-05  
   - **Parallel-ok:** P11-02  
   - **Deliverable:** `ArenaProfile` in config/TOML — named `{ white: SideStrength, black: SideStrength }`; assign profile per slot at start or mid-session (“White=strong / Black=weak” tournament layout)  
   - **Acceptance:** Start 8 games with alternating strong/weak colors via profile file; inspector shows which profile each slot uses  
-  - **Research:** `config.json` `bot.white` / `bot.black`
+  - **Research:** [ARENA.md §5.4](./ARENA.md#54-arenaprofile-profilers-p11-07) (`ArenaProfile`) · `config.json` `bot.white` / `bot.black`
 
 - [ ] **P11-08** — Export + session log  
   - **Deps:** P11-02, P11-01  
   - **Parallel-ok:** P11-07  
   - **Deliverable:** On slot finish: append PGN + result to session log; inspector “export all finished”; optional JSON lines event stream (`move`, `eval`, `finish`) for scripting  
   - **Acceptance:** Finished games recoverable as PGN; JSONL tail shows eval after each move when `--jsonl` passed  
-  - **Research:** P9-06 PGN export patterns · P8-03 (informal runs, not SPRT gate)
+  - **Research:** [ARENA.md §9](./ARENA.md#9-export--session-log-p11-08) (PGN writer + JSONL) · P9-06 PGN export patterns · P8-03 (informal runs, not SPRT gate)
 
 - [ ] **P11-09** — Shared session refactor (extract from TUI)  
   - **Deps:** P11-01, TUI-03  
   - **Parallel-ok:** P11-04  
   - **Deliverable:** Move search spawn / `SearchInfo` polling / `go` limits wiring into shared module used by `tui/` and `arena/`; TUI behavior unchanged  
   - **Acceptance:** `cargo test` + manual TUI smoke pass; arena and TUI both call same `GameSession` (or equivalent) API  
-  - **Research:** ARCHITECTURE §3 · avoid duplicating `spawn_search` in two places
+  - **Research:** [ARENA.md §3](./ARENA.md#3-relationship-to-existing-modules-reuse-dont-duplicate) (reuse, don't duplicate) · [ARENA.md §13 Q3](./ARENA.md#13-open-questions) · ARCHITECTURE §3 · avoid duplicating `spawn_search` in two places
 
 ---
 
@@ -890,7 +892,8 @@ Do **not** start with MCTS + deep GPU nets unless deliberately leaving this task
 | [uniqueideas.md](./uniqueideas.md) | Non-goals for this board — exploration track |
 | [LICHESS.md](./LICHESS.md) | Bot API, CLI daemon, challenge matchmaking (P9) |
 | [openings.md](./openings.md) | Opening book strategy, quick-cutoff failures, implementation phases (P10) |
+| [ARENA.md](./ARENA.md) | Bulk Bot-vs-Bot arena: slots, scheduler, inspector, export (P11) |
 
 ---
 
-*Task board synthesized 2026-07-10 from chesswiki / reckless / stockfish research; P9 added 2026-07-12; P10 + opening tasks added 2026-07-12; P11 arena lab added 2026-07-12.*
+*Task board synthesized 2026-07-10 from chesswiki / reckless / stockfish research; P9 added 2026-07-12; P10 + opening tasks added 2026-07-12; P11 arena lab added 2026-07-12; P11 ARENA.md plan doc + task research pointers added 2026-07-12.*
