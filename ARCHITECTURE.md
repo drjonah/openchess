@@ -93,7 +93,10 @@ openchess/
     │   ├── board_view.rs   # Unicode board + last-move highlight
     │   ├── input.rs        # UCI/SAN parse + keybindings
     │   ├── engine_panel.rs # depth, score, PV, nodes, time
-    │   └── session.rs      # thin Board + go/info/bestmove adapter
+    │   └── session.rs      # play modes + EngineSession (uses session::LiveSearch)
+    │
+    ├── session/            # shared LiveSearch / SearchInfo (TUI + arena)
+    ├── arena/              # P11 — bulk Bot-vs-Bot lab (run / watch)
     │
     ├── thread.rs           # P8 — ThreadData, SharedContext
     ├── threadpool.rs       # P8 — Lazy SMP workers

@@ -3,7 +3,8 @@
 use super::material::format_material_score;
 use super::piece_art::{self, PieceSize};
 use super::session::EngineSession;
-use crate::types::{Color as Side, Piece, Square};
+use crate::board::Board;
+use crate::types::{Color as Side, Move, Piece, Square};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -23,14 +24,20 @@ fn piece_fg(piece: Piece) -> Color {
     }
 }
 
-fn square_bg(session: &EngineSession, sq: Square, file: u8, rank: u8) -> Color {
+fn square_bg_base(file: u8, rank: u8, last_move: Option<Move>) -> Color {
     let light = (file + rank) % 2 == 1;
     let mut bg = if light { BOARD_LIGHT } else { BOARD_DARK };
-    if let Some(mv) = session.last_move() {
+    if let Some(mv) = last_move {
+        let sq = Square::from_file_rank(file, rank).unwrap();
         if sq == mv.from() || sq == mv.to() {
             bg = LAST_MOVE;
         }
     }
+    bg
+}
+
+fn square_bg(session: &EngineSession, sq: Square, file: u8, rank: u8) -> Color {
+    let mut bg = square_bg_base(file, rank, session.last_move());
     // Best-move hint is Analyze-only (Shift+G); never paint it during live play.
     if session.show_engine_hints() {
         if let Some(best) = session.info().bestmove.as_deref() {
@@ -85,7 +92,48 @@ fn material_score_style(balance_cp: i32) -> Style {
     }
 }
 
+/// Render a board from an [`EngineSession`] (main TUI path).
 pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
+    render_board(
+        frame,
+        area,
+        session.board(),
+        session.flipped(),
+        session.last_move(),
+        session.board().material_balance(),
+        |sq, file, rank| square_bg(session, sq, file, rank),
+    );
+}
+
+/// Snapshot-oriented board render (arena inspector).
+pub fn render_position(
+    frame: &mut Frame,
+    area: Rect,
+    board: &Board,
+    flipped: bool,
+    last_move: Option<Move>,
+    material_balance_cp: i32,
+) {
+    render_board(
+        frame,
+        area,
+        board,
+        flipped,
+        last_move,
+        material_balance_cp,
+        |_sq, file, rank| square_bg_base(file, rank, last_move),
+    );
+}
+
+fn render_board(
+    frame: &mut Frame,
+    area: Rect,
+    board: &Board,
+    flipped: bool,
+    _last_move: Option<Move>,
+    material_balance_cp: i32,
+    square_bg_fn: impl Fn(Square, u8, u8) -> Color,
+) {
     let block = Block::default().title(" Board ").borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -94,8 +142,7 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
         return;
     }
 
-    let flipped = session.flipped();
-    let stm = match session.side_to_move() {
+    let stm = match board.side_to_move() {
         Side::White => "White",
         Side::Black => "Black",
     };
@@ -122,15 +169,14 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
-    let balance_cp = session.board().material_balance();
-    let score_label = format_material_score(balance_cp);
+    let score_label = format_material_score(material_balance_cp);
     lines.push(Line::from(vec![
         Span::raw(format!(
             "Move {} · {} to play · Material ",
-            session.fullmove_number(),
+            board.fullmove_number(),
             stm
         )),
-        Span::styled(score_label, material_score_style(balance_cp)),
+        Span::styled(score_label, material_score_style(material_balance_cp)),
     ]));
     lines.push(Line::from(""));
 
@@ -147,8 +193,8 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
 
             for &file in &files {
                 let sq = Square::from_file_rank(file, rank).unwrap();
-                let piece = session.piece_on(sq);
-                let bg = square_bg(session, sq, file, rank);
+                let piece = board.piece_on(sq);
+                let bg = square_bg_fn(sq, file, rank);
                 let cell = cell_content(piece, row_in_cell, cell_h, cell_w, mid_col);
                 let style = Style::default().bg(bg).fg(piece_fg(piece));
                 spans.push(Span::styled(cell, style));

@@ -611,37 +611,37 @@ flowchart TB
   - **Research:** [ARENA.md §5.3](./ARENA.md#53-gamesnapshot-snapshotrs-p11-03) (`GameSnapshot`) · `tui/session.rs` `SearchInfo`, `live_eval_cp` · P6 material eval  
   - **Note:** `arena/snapshot.rs` — `GameSnapshot::of(&GameSlot)` (clone, no lock held) + `MaterialBalance::of(&Board)` (per-side counts + cp). `Arena::snapshots()` for the monitor/inspector. Tests: `startpos_material_is_balanced`, `material_after_queen_capture`, `snapshot_reads_slot_without_search`.
 
-- [ ] **P11-04** — Inspector TUI (game list + drill-down)  
+- [x] **P11-04** — Inspector TUI (game list + drill-down)  
   - **Deps:** P11-03, TUI-01  
   - **Parallel-ok:** P11-05, P11-06  
   - **Deliverable:** `openchess arena` (no subcommand) or `arena watch` — ratatui layout: **game list** (id, ply, last move, eval, status) + **detail pane** (board, full move list, eval bar, material line, engine panel when thinking); keys: select slot, back to list, flip board  
   - **Acceptance:** With 4 running games, user can switch between slots mid-game and see current position + eval; returning to list shows all slots still advancing  
   - **Research:** [ARENA.md §7](./ARENA.md#7-inspector-tui-p11-04) (inspector layout + non-blocking rule) · TUI-01 board render · TUI-03 engine panel · ARCHITECTURE §7  
-  - **Note:** Not done. A non-interactive text monitor (`arena watch` / bare `arena`) prints a live game table over `Arena::snapshots()` as a stand-in; the full ratatui inspector (drill-down, board, eval bar) is still open.
+  - **Note:** `arena/watch.rs` — ratatui two-pane inspector over `Arena::tick` + `snapshots()`; reuses `tui::{board_view,eval_bar,move_list,engine_panel,material}` snapshot adapters. Keys: ↑/↓ select, f flip, plus P11-05/06 controls.
 
-- [ ] **P11-05** — Runtime strength editing per slot  
+- [x] **P11-05** — Runtime strength editing per slot  
   - **Deps:** P11-01, P11-04  
   - **Parallel-ok:** P11-06  
   - **Deliverable:** Inspector commands / settings overlay: edit White and Black `depth` + `movetime_ms` per slot (or apply a named **profile** preset); changes take effect on that side's **next** move; optional “mirror to all slots”  
   - **Acceptance:** Mid-game, raising Black depth from 8→20 visible in next Black think; lowering White movetime speeds White replies; config matches `config.json` `SideStrength` shape  
   - **Research:** [ARENA.md §8.1](./ARENA.md#81-per-slot-strength-editing-p11-05) (edit-on-next-move timing) · `src/config.rs` `SideStrength`, `play_go_limits`  
-  - **Note:** API done (`GameSlot::set_strength`, `Arena::set_slot_strength`/`set_all_strength`; edit takes effect on the side's next search — an in-flight search is not interrupted). Test: `set_strength_takes_effect`. Inspector overlay UI pending with P11-04.
+  - **Note:** API done (`GameSlot::set_strength`, `Arena::set_slot_strength`/`set_all_strength`). Inspector: `[`/`]` depth, `{`/`}` movetime on side-to-move, `m` mirror to all. Test: `set_strength_takes_effect`.
 
-- [ ] **P11-06** — Per-slot game control  
+- [x] **P11-06** — Per-slot game control  
   - **Deps:** P11-01, P11-04  
   - **Parallel-ok:** P11-05, P11-07  
   - **Deliverable:** Pause / resume slot; restart slot (new game, same strengths); step one move (manual advance when paused); abort slot  
   - **Acceptance:** Paused slot stops making moves; other slots continue; restart clears history and returns to startpos  
   - **Research:** [ARENA.md §8.2–§8.3](./ARENA.md#82-per-slot-game-control-p11-06) (control + adjudication) · TUI session undo/new-game patterns  
-  - **Note:** API done (`pause`/`resume`/`restart`/`request_step`/`abort` on `GameSlot`; `Arena::{pause,resume,restart,step,abort}_slot`). Paused slots are skipped by the scheduler; other slots keep advancing. Tests: `pause_blocks_scheduling_then_resume_restores`, `restart_clears_transcript`, `abort_marks_unfinished`. Inspector key-bindings pending with P11-04.
+  - **Note:** API done (`pause`/`resume`/`restart`/`request_step`/`abort`). Inspector keys: `p`/`r`/`n`/`s`/`a`. Tests: `pause_blocks_scheduling_then_resume_restores`, `restart_clears_transcript`, `abort_marks_unfinished`.
 
-- [ ] **P11-07** — Match profiles + slot assignment  
+- [x] **P11-07** — Match profiles + slot assignment  
   - **Deps:** P11-05  
   - **Parallel-ok:** P11-02  
   - **Deliverable:** `ArenaProfile` in config/TOML — named `{ white: SideStrength, black: SideStrength }`; assign profile per slot at start or mid-session (“White=strong / Black=weak” tournament layout)  
   - **Acceptance:** Start 8 games with alternating strong/weak colors via profile file; inspector shows which profile each slot uses  
   - **Research:** [ARENA.md §5.4](./ARENA.md#54-arenaprofile-profilers-p11-07) (`ArenaProfile`) · `config.json` `bot.white` / `bot.black`  
-  - **Note:** Model + assignment done (`arena/profile.rs` `ArenaProfile`/`ProfileSet`; `--profile FILE` assigns round-robin with color-swap on odd slots; `snapshot.profile` carries the name). Test: `profiles_assigned_round_robin_with_color_swap`. Inspector display of the profile pending with P11-04.
+  - **Note:** Model + assignment done (`arena/profile.rs`; `--profile FILE` round-robin with color-swap). Inspector list/detail show `snapshot.profile`. Test: `profiles_assigned_round_robin_with_color_swap`.
 
 - [x] **P11-08** — Export + session log  
   - **Deps:** P11-02, P11-01  
@@ -651,13 +651,13 @@ flowchart TB
   - **Research:** [ARENA.md §9](./ARENA.md#9-export--session-log-p11-08) (PGN writer + JSONL) · P9-06 PGN export patterns · P8-03 (informal runs, not SPRT gate)  
   - **Note:** `arena/export.rs` — first in-tree PGN *writer* (`slot_pgn`, headers + numbered movetext + result, `[FEN]` for non-startpos) and `event_jsonl` (`move`/`finish` lines). `arena run --pgn-dir` writes one PGN per game; `--jsonl` streams events with per-move White-relative eval. Tests: `pgn_has_headers_and_matches_transcript`, `jsonl_move_and_finish_format`.
 
-- [ ] **P11-09** — Shared session refactor (extract from TUI)  
+- [x] **P11-09** — Shared session refactor (extract from TUI)  
   - **Deps:** P11-01, TUI-03  
   - **Parallel-ok:** P11-04  
   - **Deliverable:** Move search spawn / `SearchInfo` polling / `go` limits wiring into shared module used by `tui/` and `arena/`; TUI behavior unchanged  
   - **Acceptance:** `cargo test` + manual TUI smoke pass; arena and TUI both call same `GameSession` (or equivalent) API  
   - **Research:** [ARENA.md §3](./ARENA.md#3-relationship-to-existing-modules-reuse-dont-duplicate) (reuse, don't duplicate) · [ARENA.md §13 Q3](./ARENA.md#13-open-questions) · ARCHITECTURE §3 · avoid duplicating `spawn_search` in two places  
-  - **Note:** Not done. Arena currently has its own `SearchJob` mirroring `tui/session.rs` `spawn_search`; it reuses `SearchInfo`/`stm_score_to_white`/`PlyRecord`/`format_san` (both submodules made `pub`). The single shared `GameSession` extraction is still open.
+  - **Note:** `src/session/` — `LiveSearch::spawn(board, limits, hash_mb)`, `SearchInfo`, `stm_score_to_white`. TUI `EngineSession` and arena `GameSlot` both use it; `tui::session` re-exports `SearchInfo` / `stm_score_to_white` for compatibility.
 
 ---
 
@@ -944,4 +944,4 @@ Do **not** start with MCTS + deep GPU nets unless deliberately leaving this task
 
 ---
 
-*Task board synthesized 2026-07-10 from chesswiki / reckless / stockfish research; P9 added 2026-07-12; P10 + opening tasks added 2026-07-12; P11 arena lab added 2026-07-12; P11 ARENA.md plan doc + task research pointers added 2026-07-12; P11-01/02/03/08 implemented (`src/arena/`), 05/06/07 API landed (inspector UI pending) 2026-07-12.*
+*Task board synthesized 2026-07-10 from chesswiki / reckless / stockfish research; P9 added 2026-07-12; P10 + opening tasks added 2026-07-12; P11 arena lab added 2026-07-12; P11 ARENA.md plan doc + task research pointers added 2026-07-12; P11-01..P11-09 complete (`src/arena/` + `src/session/` shared LiveSearch) 2026-07-13.*

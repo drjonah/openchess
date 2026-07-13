@@ -5,7 +5,7 @@
 //! See [`research/ARENA.md`](../../research/ARENA.md) for the full design.
 //!
 //! Entry point: `openchess arena run …` (headless batch) and
-//! `openchess arena watch` (text monitor).
+//! `openchess arena watch` (interactive ratatui inspector).
 
 pub mod batch;
 mod cli;
@@ -14,6 +14,7 @@ pub mod profile;
 pub mod runner;
 pub mod slot;
 pub mod snapshot;
+mod watch;
 
 pub use batch::{BatchOptions, BatchSummary, run as run_batch};
 pub use profile::{ArenaProfile, ProfileSet};

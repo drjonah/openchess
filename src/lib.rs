@@ -9,6 +9,7 @@ pub mod history;
 pub mod lookup;
 pub mod movepick;
 pub mod search;
+pub mod session;
 pub mod threadpool;
 pub mod time;
 pub mod tools;

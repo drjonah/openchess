@@ -2,22 +2,18 @@
 //! and an optional background search job.
 //!
 //! Each slot owns its own board and, while searching, a private
-//! [`TranspositionTable`] — no state is shared between slots (P11-01).
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
-use std::time::Duration;
+//! transposition table via [`crate::session::LiveSearch`] — no state is shared
+//! between slots (P11-01).
 
 use crate::board::{Board, GameResult};
 use crate::book::{Book, BookRng};
 use crate::config::SideStrength;
-use crate::search::{self, Limits, SearchResult};
-use crate::transposition::TranspositionTable;
+use crate::search::{Limits, SearchResult};
+use crate::session::{LiveSearch, SearchInfo, stm_score_to_white};
 use crate::tui::game::PlyRecord;
 use crate::tui::san::format_san;
-use crate::tui::session::{SearchInfo, stm_score_to_white};
 use crate::types::{Color, Move};
+use std::time::Duration;
 
 /// Scheduler state of a slot (distinct from the chess [`GameResult`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,72 +79,6 @@ pub enum SlotEvent {
     },
 }
 
-/// Live per-iteration search stats published by the worker thread.
-#[derive(Clone, Debug, Default)]
-struct LiveInfo {
-    depth: u32,
-    score_cp: i32,
-    nodes: u64,
-    time: Duration,
-    pv: String,
-}
-
-/// Background search running on its own thread with a private TT.
-struct SearchJob {
-    stop: Arc<AtomicBool>,
-    result: Arc<Mutex<Option<SearchResult>>>,
-    live: Arc<Mutex<LiveInfo>>,
-    handle: Option<JoinHandle<()>>,
-    /// Side to move when the search started (for White-relative conversion).
-    stm: Color,
-}
-
-impl SearchJob {
-    fn spawn(board: Board, limits: Limits, hash_mb: usize, stm: Color) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let result = Arc::new(Mutex::new(None));
-        let live = Arc::new(Mutex::new(LiveInfo::default()));
-        let stop_t = Arc::clone(&stop);
-        let result_t = Arc::clone(&result);
-        let live_t = Arc::clone(&live);
-
-        let handle = std::thread::spawn(move || {
-            let mut board = board;
-            let tt = TranspositionTable::new(hash_mb);
-            let mut on_info =
-                |depth: i32, score: i32, nodes: u64, time: Duration, pv: &str, _hashfull: u32| {
-                    if let Ok(mut l) = live_t.lock() {
-                        l.depth = depth.max(0) as u32;
-                        l.score_cp = score;
-                        l.nodes = nodes;
-                        l.time = time;
-                        l.pv = pv.to_string();
-                    }
-                };
-            let out = search::go(&mut board, limits, &tt, &stop_t, Some(&mut on_info));
-            if let Ok(mut slot) = result_t.lock() {
-                *slot = Some(out);
-            }
-        });
-
-        Self {
-            stop,
-            result,
-            live,
-            handle: Some(handle),
-            stm,
-        }
-    }
-
-    /// Signal stop and join the worker thread.
-    fn shutdown(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
 /// One concurrent Bot-vs-Bot game.
 pub struct GameSlot {
     pub id: usize,
@@ -163,7 +93,9 @@ pub struct GameSlot {
     pub profile: Option<String>,
     status: SlotStatus,
     finish_reason: Option<FinishReason>,
-    job: Option<SearchJob>,
+    job: Option<LiveSearch>,
+    /// Side to move when the current search started.
+    search_stm: Option<Color>,
     last_info: SearchInfo,
     last_move: Option<Move>,
     result: GameResult,
@@ -233,6 +165,7 @@ impl GameSlot {
             status: SlotStatus::Idle,
             finish_reason: None,
             job: None,
+            search_stm: None,
             last_info: SearchInfo::default(),
             last_move: None,
             result,
@@ -373,7 +306,8 @@ impl GameSlot {
             thinking: true,
             ..SearchInfo::default()
         };
-        self.job = Some(SearchJob::spawn(self.board.clone(), limits, hash_mb, stm));
+        self.search_stm = Some(stm);
+        self.job = Some(LiveSearch::spawn(self.board.clone(), limits, hash_mb));
         self.status = SlotStatus::Thinking;
         Vec::new()
     }
@@ -384,23 +318,21 @@ impl GameSlot {
             return Vec::new();
         };
 
-        if let Ok(live) = job.live.lock() {
-            self.last_info.depth = live.depth;
-            self.last_info.score_cp = live.score_cp;
-            self.last_info.nodes = live.nodes;
-            self.last_info.time = live.time;
-            self.last_info.thinking = true;
-        }
+        let live = job.snapshot_live();
+        self.last_info.depth = live.depth;
+        self.last_info.score_cp = live.score_cp;
+        self.last_info.nodes = live.nodes;
+        self.last_info.time = live.time;
+        self.last_info.pv = live.pv;
+        self.last_info.thinking = true;
 
-        let ready = job.result.lock().ok().map(|g| g.is_some()).unwrap_or(false);
-        if !ready {
+        if !job.is_ready() {
             return Vec::new();
         }
 
         let mut job = self.job.take().unwrap();
-        let stm = job.stm;
-        job.shutdown();
-        let result = job.result.lock().ok().and_then(|mut g| g.take());
+        let stm = self.search_stm.take().unwrap_or(Color::White);
+        let result = job.take_result();
         self.apply_result(stm, result)
     }
 
@@ -485,6 +417,7 @@ impl GameSlot {
         if let Some(mut job) = self.job.take() {
             job.shutdown();
         }
+        self.search_stm = None;
         self.last_info.thinking = false;
     }
 

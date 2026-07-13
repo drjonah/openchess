@@ -38,20 +38,79 @@ With no arguments (`cargo run`), the binary starts in UCI mode instead of the TU
 
 ### Arena lab (Bot vs Bot)
 
-Run many concurrent local self-play games for development and tuning — not formal SPRT.
+Run many concurrent local self-play games for development and tuning. This is an in-process lab — not formal SPRT (`testing/sprt.sh`) and not online Lichess.
 
 ```bash
-# 8 games at depth 8, up to 4 searches in flight, write PGNs
+openchess arena run …    # headless batch; prints a W/D/L summary
+openchess arena watch …  # interactive inspector (default if you omit the subcommand)
+openchess arena …        # same as watch
+```
+
+Prefer a release build for usable think times:
+
+```bash
+cargo build --release
+./target/release/openchess arena watch --games 4 --depth 6 --concurrency 2
+```
+
+#### Headless batch (`arena run`)
+
+Advances all games to completion, then prints a one-line summary:
+
+```text
+games=8 white_wins=3 black_wins=2 draws=3 unfinished=0 avg_plies=42.5
+```
+
+```bash
+# 8 games at depth 8, up to 4 searches in flight, write one PGN per game
 cargo run --release -- arena run --games 8 --depth 8 --concurrency 4 --pgn-dir /tmp/arena
 
-# Asymmetric strength (odd games swap colors for balance)
+# Asymmetric strength (odd slots swap colors so each side plays both colors)
 cargo run --release -- arena run --games 16 --white-depth 12 --black-depth 6 --concurrency 4
 
-# Live text monitor
+# Stream JSONL move/finish events on stdout (summary goes to stderr)
+cargo run --release -- arena run --games 4 --depth 4 --jsonl
+```
+
+Useful flags (shared by `run` and `watch`):
+
+| Flag | Meaning |
+|------|---------|
+| `--games N` | Concurrent game slots (default 1) |
+| `--depth D` | Search depth for both sides (default 6) |
+| `--movetime MS` | Per-move time limit; `0` = depth-only |
+| `--white-depth` / `--black-depth` | Per-side depth override |
+| `--white-movetime` / `--black-movetime` | Per-side movetime override |
+| `--concurrency K` | Max searches in flight (default 1 = serial) |
+| `--hash MB` | Per-search TT size (default 8) |
+| `--max-plies N` | Adjudicate a draw after N plies (default 400) |
+| `--pgn-dir DIR` | Write one PGN per finished game (`run` only) |
+| `--jsonl` | Emit JSONL `move`/`finish` events (`run` only) |
+| `--profile FILE` | JSON strength profiles assigned across slots |
+| `--no-alternate-colors` | Keep White/Black strengths fixed (no color swap) |
+
+#### Interactive inspector (`arena watch`)
+
+Live two-pane UI: game list on the left, selected game (board, moves, eval, engine panel) on the right. Games keep advancing while you browse.
+
+```bash
 cargo run --release -- arena watch --games 4 --depth 6 --concurrency 2
 ```
 
-Details: [research/ARENA.md](research/ARENA.md) · task board P11 in [research/tasks.md](research/tasks.md).
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` (or `k` / `j`) | Select slot |
+| `f` | Flip board |
+| `p` / `r` | Pause / resume selected slot |
+| `n` | Restart selected slot |
+| `s` | Step one ply (when paused) |
+| `a` | Abort selected slot |
+| `[` / `]` | Lower / raise depth for the side to move (next move) |
+| `{` / `}` | Lower / raise movetime for the side to move |
+| `m` | Mirror this slot’s strengths to all slots |
+| `q` / `Esc` | Quit |
+
+Design notes: [research/ARENA.md](research/ARENA.md) · task board P11 in [research/tasks.md](research/tasks.md).
 
 ### Lichess bot (optional)
 

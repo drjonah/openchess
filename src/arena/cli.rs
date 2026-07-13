@@ -1,20 +1,17 @@
 //! `openchess arena` command-line front.
 //!
 //! - `arena run …` — headless batch (P11-02).
-//! - `arena watch …` / bare `arena` — live text monitor (a lightweight
-//!   stand-in for the ratatui inspector, P11-04).
+//! - `arena watch …` / bare `arena` — interactive ratatui inspector (P11-04).
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use crate::config::SideStrength;
 
 use super::batch::{self, BatchOptions};
 use super::profile::ProfileSet;
-use super::runner::{Arena, ArenaConfig, DEFAULT_HASH_MB, DEFAULT_PLY_LIMIT};
-use super::slot::SlotStatus;
+use super::runner::{ArenaConfig, DEFAULT_HASH_MB, DEFAULT_PLY_LIMIT};
+use super::watch;
 
 const DEFAULT_GAMES: usize = 1;
 const DEFAULT_DEPTH: u32 = 6;
@@ -113,53 +110,7 @@ fn run_watch(args: &[String]) -> ExitCode {
         }
     };
 
-    let mut arena = Arena::from_config(&opts.arena);
-    let mut out = std::io::stdout();
-    loop {
-        let _ = arena.tick();
-        render_monitor(&mut out, &arena);
-        if arena.all_finished() || (arena.thinking_count() == 0 && !arena.any_runnable()) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    // Final frame.
-    render_monitor(&mut out, &arena);
-    println!();
-    ExitCode::SUCCESS
-}
-
-fn render_monitor(out: &mut std::io::Stdout, arena: &Arena) {
-    let mut buf = String::new();
-    // Clear screen + home cursor.
-    buf.push_str("\x1b[2J\x1b[H");
-    buf.push_str("OpenChess arena — live monitor (Ctrl-C to quit)\n\n");
-    buf.push_str(" id  status     ply  last     eval    result\n");
-    buf.push_str(" --- ---------- ---- -------- ------- --------\n");
-    for snap in arena.snapshots() {
-        let status = match snap.status {
-            SlotStatus::Idle => "idle",
-            SlotStatus::Thinking => "thinking",
-            SlotStatus::Paused => "paused",
-            SlotStatus::Finished => "finished",
-        };
-        let last = snap.last_move.clone().unwrap_or_else(|| "-".into());
-        let eval = snap
-            .eval_white_cp
-            .map(|cp| format!("{:+.2}", cp as f64 / 100.0))
-            .unwrap_or_else(|| "-".into());
-        let result = if snap.status == SlotStatus::Finished {
-            snap.outcome.result_tag()
-        } else {
-            "-"
-        };
-        buf.push_str(&format!(
-            " {:>3} {:<10} {:>4} {:<8} {:>7} {:>8}\n",
-            snap.id, status, snap.ply, last, eval, result
-        ));
-    }
-    let _ = out.write_all(buf.as_bytes());
-    let _ = out.flush();
+    watch::run(&opts.arena)
 }
 
 fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
@@ -272,7 +223,7 @@ fn print_usage() {
          Bulk local Bot-vs-Bot battles.\n\n\
          subcommands:\n\
          \x20 run      headless batch; prints a W/D/L summary (exit 0)\n\
-         \x20 watch    live text monitor of all games (default)\n\n\
+         \x20 watch    interactive inspector (default)\n\n\
          options:\n\
          \x20 --games N               number of concurrent games (default 1)\n\
          \x20 --depth D               search depth for both sides (default 6)\n\
@@ -287,6 +238,9 @@ fn print_usage() {
          \x20 --pgn-dir DIR           write one PGN per finished game\n\
          \x20 --jsonl                 emit a JSONL move/finish event stream\n\
          \x20 --profile FILE          JSON strength profiles assigned across slots\n\
-         \x20 --no-alternate-colors   keep White/Black strengths fixed (no color swap)"
+         \x20 --no-alternate-colors   keep White/Black strengths fixed (no color swap)\n\n\
+         watch keys:\n\
+         \x20 ↑/↓  select slot · f flip · p/r pause/resume · n restart\n\
+         \x20 s step · a abort · [/] depth · {{/}} movetime · m mirror · q quit"
     );
 }

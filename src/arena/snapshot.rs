@@ -4,6 +4,8 @@
 //! render one slot while other slots keep searching, without holding any lock.
 
 use crate::board::{Board, GameResult};
+use crate::config::SideStrength;
+use crate::session::SearchInfo;
 use crate::types::{Color, PieceType};
 
 use super::slot::{GameSlot, Outcome, SlotStatus};
@@ -70,16 +72,29 @@ pub struct GameSnapshot {
     /// White-relative eval centipawns from the last completed search.
     pub eval_white_cp: Option<i32>,
     pub material: MaterialBalance,
-    /// Live search depth (0 when idle/finished).
-    pub depth: u32,
-    pub nodes: u64,
-    pub thinking: bool,
+    /// Full live / last-completed search info (depth, score, PV, nodes, time).
+    pub info: SearchInfo,
+    /// Current White / Black strength for the inspector strength panel.
+    pub white: SideStrength,
+    pub black: SideStrength,
 }
 
 impl GameSnapshot {
+    /// Live search depth (0 when idle/finished).
+    pub fn depth(&self) -> u32 {
+        self.info.depth
+    }
+
+    pub fn nodes(&self) -> u64 {
+        self.info.nodes
+    }
+
+    pub fn thinking(&self) -> bool {
+        self.info.thinking
+    }
+
     /// Build a snapshot from a live slot (no search is started).
     pub fn of(slot: &GameSlot) -> Self {
-        let info = slot.last_info();
         Self {
             id: slot.id,
             fen: slot.board().to_fen(),
@@ -93,9 +108,9 @@ impl GameSnapshot {
             profile: slot.profile.clone(),
             eval_white_cp: slot.eval_white_cp(),
             material: MaterialBalance::of(slot.board()),
-            depth: info.depth,
-            nodes: info.nodes,
-            thinking: info.thinking,
+            info: slot.last_info().clone(),
+            white: slot.strength(Color::White).clone(),
+            black: slot.strength(Color::Black).clone(),
         }
     }
 }
@@ -148,6 +163,9 @@ mod tests {
         assert_eq!(snap.side_to_move, Color::White);
         assert!(snap.transcript.is_empty());
         assert_eq!(snap.material.balance_cp, 0);
-        assert!(!snap.thinking);
+        assert!(!snap.thinking());
+        assert_eq!(snap.info.depth, 0);
+        assert_eq!(snap.white.depth, 1);
+        assert_eq!(snap.black.depth, 1);
     }
 }

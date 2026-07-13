@@ -7,28 +7,16 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession, config: &Config) {
     let info: &SearchInfo = session.info();
-    let score = format!("{:+}", info.score_cp);
     let show_hints = session.show_engine_hints();
     let best = if show_hints {
         info.bestmove.as_deref().unwrap_or("-")
     } else {
         "-"
     };
-    let ms = info.time.as_millis();
-    let nps = if ms > 0 {
-        info.nodes.saturating_mul(1000) / ms as u64
-    } else {
-        0
-    };
     let pv = if !show_hints || info.pv.is_empty() {
         "-"
     } else {
         info.pv.as_str()
-    };
-    let status = if info.thinking {
-        "thinking…"
-    } else {
-        "idle"
     };
 
     let limits_line = if matches!(session.mode(), Some(PlayMode::BotVsBot)) {
@@ -55,10 +43,48 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession, config: &C
         )
     };
 
+    let help = "G go · s stop · , settings";
+    render_info(
+        frame,
+        area,
+        info,
+        session.mode_title(),
+        &limits_line,
+        pv,
+        help,
+        session.mode().is_some(),
+    );
+}
+
+/// Snapshot-oriented engine panel (arena inspector). Always shows PV.
+pub fn render_info(
+    frame: &mut Frame,
+    area: Rect,
+    info: &SearchInfo,
+    title: &str,
+    limits_line: &str,
+    pv: &str,
+    help: &str,
+    title_active: bool,
+) {
+    let score = format!("{:+}", info.score_cp);
+    let ms = info.time.as_millis();
+    let nps = if ms > 0 {
+        info.nodes.saturating_mul(1000) / ms as u64
+    } else {
+        0
+    };
+    let status = if info.thinking {
+        "thinking…"
+    } else {
+        "idle"
+    };
+    let pv_display = if pv.is_empty() { "-" } else { pv };
+
     let text = vec![
         Line::from(Span::styled(
-            session.mode_title(),
-            if session.mode().is_some() {
+            title.to_string(),
+            if title_active {
                 Style::default().fg(Color::Cyan).bold()
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -76,10 +102,10 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession, config: &C
             "d{}  {score}cp  n{}  {ms}ms  {nps} nps",
             info.depth, info.nodes
         )),
-        Line::from(format!("PV {pv}")),
-        Line::from(limits_line),
+        Line::from(format!("PV {pv_display}")),
+        Line::from(limits_line.to_string()),
         Line::from(Span::styled(
-            "G go · s stop · , settings",
+            help.to_string(),
             Style::default().fg(Color::DarkGray),
         )),
     ];

@@ -126,6 +126,70 @@ pub fn render(frame: &mut Frame, area: Rect, session: &EngineSession) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Snapshot-oriented move list from SAN tokens (arena inspector).
+pub fn render_transcript(frame: &mut Frame, area: Rect, transcript: &[String], title: &str) {
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    if transcript.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No moves yet")
+                .style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    let body_height = inner.height as usize;
+    let mut pair_lines: Vec<Line<'static>> = Vec::new();
+
+    let mut i = 0usize;
+    while i < transcript.len() {
+        let move_no = i / 2 + 1;
+        let mut spans = vec![Span::styled(
+            format!("{move_no}. "),
+            Style::default().fg(Color::DarkGray),
+        )];
+        spans.push(Span::styled(
+            transcript[i].clone(),
+            Style::default().fg(Color::White),
+        ));
+        if let Some(black) = transcript.get(i + 1) {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(black.clone(), Style::default().fg(Color::White)));
+        }
+        pair_lines.push(Line::from(spans));
+        i += 2;
+    }
+
+    let total = pair_lines.len();
+    let scroll = if total <= body_height {
+        0
+    } else {
+        total - body_height
+    };
+
+    for (idx, line) in pair_lines.into_iter().enumerate() {
+        if idx < scroll {
+            continue;
+        }
+        if lines.len() >= body_height {
+            break;
+        }
+        lines.push(line);
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn ply_spans(ply: &PlyRecord, highlight: bool) -> Vec<Span<'static>> {
     let base = if highlight {
         Style::default()

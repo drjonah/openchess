@@ -1,9 +1,9 @@
 //! OpenChess terminal UI (ratatui).
 
-mod board_view;
-mod engine_panel;
+pub mod board_view;
+pub mod engine_panel;
 mod piece_art;
-mod eval_bar;
+pub mod eval_bar;
 mod classify;
 pub mod game;
 #[cfg(feature = "chesscom")]
@@ -11,8 +11,8 @@ mod game_picker;
 mod import;
 mod input;
 mod mode_picker;
-mod material;
-mod move_list;
+pub mod material;
+pub mod move_list;
 pub mod san;
 mod settings;
 pub mod session;

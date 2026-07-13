@@ -9,30 +9,20 @@ use super::game::{
 use super::san::format_san;
 use crate::board::{Board, GameResult};
 use crate::book::{Book, BookRng};
-use crate::search::{self, Limits, SearchResult};
-use crate::transposition::TranspositionTable;
-use crate::types::{Color, Move, Piece, PieceType, Square, Value};
+use crate::search::{Limits, SearchResult};
+use crate::session::LiveSearch;
+use crate::types::{Color, Move, Piece, PieceType, Square};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+// Re-export for callers that historically imported from `tui::session`.
+pub use crate::session::{SearchInfo, stm_score_to_white};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GoLimits {
     pub depth: Option<u32>,
     pub movetime: Option<Duration>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct SearchInfo {
-    pub depth: u32,
-    pub score_cp: i32,
-    pub nodes: u64,
-    pub time: Duration,
-    pub pv: String,
-    pub thinking: bool,
-    pub bestmove: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,24 +73,6 @@ impl PlayMode {
             PlayMode::Analyze => "Start empty or import FEN / PGN / game",
         }
     }
-}
-
-/// Per-iteration search stats shared from the worker thread.
-#[derive(Clone, Debug, Default)]
-struct LiveInfoSnapshot {
-    depth: u32,
-    score_cp: i32,
-    nodes: u64,
-    time: Duration,
-    pv: String,
-}
-
-/// Background search job started by [`EngineSession::go`].
-struct LiveSearch {
-    stop: Arc<AtomicBool>,
-    result: Arc<Mutex<Option<SearchResult>>>,
-    live_info: Arc<Mutex<LiveInfoSnapshot>>,
-    handle: Option<JoinHandle<()>>,
 }
 
 /// Sequential post-game analysis of an imported transcript.
@@ -164,14 +136,6 @@ pub struct EngineSession {
     book_rng: BookRng,
     /// Opening-phase search floor depth (0 = off); applied on book miss (P10-04).
     opening_floor_depth: i32,
-}
-
-/// Convert a side-to-move-relative search score to White-relative centipawns.
-pub fn stm_score_to_white(score: i32, stm: Color) -> i32 {
-    match stm {
-        Color::White => score,
-        Color::Black => -score,
-    }
 }
 
 impl EngineSession {
@@ -885,44 +849,8 @@ impl EngineSession {
     }
 
     fn spawn_search(board: Board, search_limits: Limits) -> LiveSearch {
-        let stop = Arc::new(AtomicBool::new(false));
-        let result = Arc::new(Mutex::new(None));
-        let live_info = Arc::new(Mutex::new(LiveInfoSnapshot::default()));
-        let stop_t = Arc::clone(&stop);
-        let result_t = Arc::clone(&result);
-        let live_info_t = Arc::clone(&live_info);
-
-        let handle = std::thread::spawn(move || {
-            let mut board = board;
-            let tt = TranspositionTable::new(16);
-            let mut on_info =
-                |depth: i32, score: Value, nodes: u64, time: Duration, pv: &str, _hashfull: u32| {
-                    if let Ok(mut snap) = live_info_t.lock() {
-                        snap.depth = depth.max(0) as u32;
-                        snap.score_cp = score;
-                        snap.nodes = nodes;
-                        snap.time = time;
-                        snap.pv = pv.to_string();
-                    }
-                };
-            let out = search::go(
-                &mut board,
-                search_limits,
-                &tt,
-                &stop_t,
-                Some(&mut on_info),
-            );
-            if let Ok(mut slot) = result_t.lock() {
-                *slot = Some(out);
-            }
-        });
-
-        LiveSearch {
-            stop,
-            result,
-            live_info,
-            handle: Some(handle),
-        }
+        // Fixed 16 MB TT for interactive TUI searches.
+        LiveSearch::spawn(board, search_limits, 16)
     }
 
     /// Probe the opening book before searching. On a hit, play the move
@@ -1502,26 +1430,6 @@ fn parse_san_body(body: &str) -> Result<(PieceType, Disambig, &str), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::score::{VALUE_MATE, mate_in};
-
-    #[test]
-    fn stm_score_to_white_preserves_white_stm() {
-        assert_eq!(stm_score_to_white(42, Color::White), 42);
-        assert_eq!(stm_score_to_white(-15, Color::White), -15);
-    }
-
-    #[test]
-    fn stm_score_to_white_negates_black_stm() {
-        assert_eq!(stm_score_to_white(50, Color::Black), -50);
-        assert_eq!(stm_score_to_white(-30, Color::Black), 30);
-    }
-
-    #[test]
-    fn stm_score_to_white_flips_mate_for_black() {
-        let black_mates = mate_in(3);
-        assert_eq!(stm_score_to_white(black_mates, Color::Black), -black_mates);
-        assert!(stm_score_to_white(black_mates, Color::Black) <= -VALUE_MATE + 1000);
-    }
 
     #[test]
     fn new_session_starts_without_mode() {
