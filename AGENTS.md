@@ -9,6 +9,7 @@ OpenChess is an open-source chess engine written in Rust.
 - Agent task board: [research/tasks.md](research/tasks.md).
 - Design research lives in `research/` — read those when exploring search/eval ideas.
 - Lichess bot integration (CLI only, no TUI): [research/LICHESS.md](research/LICHESS.md) · tasks **P9**.
+- Bulk Bot-vs-Bot arena lab (`openchess arena`): [research/ARENA.md](research/ARENA.md) · tasks **P11**.
 - Stockfish-family paradigm; copy structure from research, not magic constants. Speculative ideas stay in `research/uniqueideas.md`.
 
 ## Conventions

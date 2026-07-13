@@ -16,6 +16,7 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Some("arena") => openchess::arena::run(args),
         #[cfg(feature = "chesscom")]
         Some("chesscom") => openchess::chesscom::cli::run(args),
         #[cfg(feature = "lichess")]
@@ -34,11 +35,11 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     #[cfg(all(feature = "chesscom", feature = "lichess"))]
-    eprintln!("usage: openchess [tui|uci|chesscom|lichess]");
+    eprintln!("usage: openchess [tui|uci|arena|chesscom|lichess]");
     #[cfg(all(feature = "chesscom", not(feature = "lichess")))]
-    eprintln!("usage: openchess [tui|uci|chesscom]");
+    eprintln!("usage: openchess [tui|uci|arena|chesscom]");
     #[cfg(all(not(feature = "chesscom"), feature = "lichess"))]
-    eprintln!("usage: openchess [tui|uci|lichess]");
+    eprintln!("usage: openchess [tui|uci|arena|lichess]");
     #[cfg(not(any(feature = "chesscom", feature = "lichess")))]
-    eprintln!("usage: openchess [tui|uci]");
+    eprintln!("usage: openchess [tui|uci|arena]");
 }

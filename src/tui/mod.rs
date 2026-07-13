@@ -5,7 +5,7 @@ mod engine_panel;
 mod piece_art;
 mod eval_bar;
 mod classify;
-mod game;
+pub mod game;
 #[cfg(feature = "chesscom")]
 mod game_picker;
 mod import;
@@ -13,7 +13,7 @@ mod input;
 mod mode_picker;
 mod material;
 mod move_list;
-mod san;
+pub mod san;
 mod settings;
 pub mod session;
 
