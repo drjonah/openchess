@@ -22,7 +22,7 @@ use crate::types::{Key, Move};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// A single weighted book candidate, stored as a UCI string and resolved (and
 /// legality-checked) against the live position at probe time.
@@ -243,15 +243,18 @@ pub(crate) fn merge_tables(dst: &mut BookTable, src: BookTable) {
     }
 }
 
-/// Build the embedded default table (mini first-move table + EPD graph).
+/// Lazily built embedded default table (mini + EPD graph).
 ///
-/// Built fresh per call (cheap, and only on bot moves) rather than cached, so a
-/// build attempted before [`crate::lookup::initialize`] can never poison a
-/// shared table for the rest of the process.
+/// [`crate::lookup::initialize`] must run before the first build (engine startup
+/// and tests that touch the book).
+static DEFAULT_TABLE: OnceLock<Arc<BookTable>> = OnceLock::new();
+
 fn default_table() -> Arc<BookTable> {
-    let mut table = mini::table();
-    merge_tables(&mut table, epd::embedded_table());
-    Arc::new(table)
+    Arc::clone(DEFAULT_TABLE.get_or_init(|| {
+        let mut table = mini::table();
+        merge_tables(&mut table, epd::embedded_table());
+        Arc::new(table)
+    }))
 }
 
 /// Load a book file by extension. Only Polyglot `.bin` is a placeholder here
@@ -349,5 +352,26 @@ mod tests {
         // not always (variety), confirming weighting works.
         assert!(e4_count > 40, "e4 chosen too rarely: {e4_count}/400");
         assert!(e4_count < 400, "no variety in book selection");
+    }
+
+    #[test]
+    fn morphy_defence_stays_in_book_through_six_plies() {
+        init();
+        let book = Book::embedded();
+        let line = [
+            "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6",
+        ];
+        let mut board = Board::startpos();
+        for (ply, uci) in line.iter().enumerate() {
+            let mv = board.parse_uci_move(uci).unwrap();
+            board.make(mv);
+            if ply + 1 < line.len() {
+                assert!(
+                    book.best_move(&board).is_some(),
+                    "book miss after ply {} ({uci})",
+                    ply + 1
+                );
+            }
+        }
     }
 }

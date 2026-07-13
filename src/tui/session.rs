@@ -8,7 +8,7 @@ use super::game::{
 };
 use super::san::format_san;
 use crate::board::{Board, GameResult};
-use crate::book::{Book, BookConfig, BookRng};
+use crate::book::{Book, BookRng};
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
 use crate::types::{Color, Move, Piece, PieceType, Square, Value};
@@ -158,8 +158,8 @@ pub struct EngineSession {
     /// After a PvB→BvB takeover (`x`), this color keeps shared `bot.*` strength
     /// instead of switching to per-side Bot vs Bot settings.
     bvb_shared_side: Option<Color>,
-    /// Opening-book settings; a book is built per bot move (P10-02 / TUI-04).
-    book_config: BookConfig,
+    /// Opening book built from [`BookConfig`] (P10-02 / TUI-04).
+    book: Book,
     /// PRNG for weighted book selection (varied bot play).
     book_rng: BookRng,
     /// Opening-phase search floor depth (0 = off); applied on book miss (P10-04).
@@ -207,7 +207,7 @@ impl EngineSession {
             analysis_stm: None,
             analysis_limits: config.analysis_go_limits(),
             bvb_shared_side: None,
-            book_config: config.book.clone(),
+            book: Book::from_config(&config.book),
             book_rng: BookRng::from_entropy(),
             opening_floor_depth: config.engine.opening_floor_depth as i32,
         }
@@ -224,7 +224,7 @@ impl EngineSession {
         self.flipped = config.tui.flip_board;
         self.eval_bar_forced = config.tui.show_eval_bar;
         self.analysis_limits = config.analysis_go_limits();
-        self.book_config = config.book.clone();
+        self.book = Book::from_config(&config.book);
         self.opening_floor_depth = config.engine.opening_floor_depth as i32;
     }
 
@@ -934,9 +934,8 @@ impl EngineSession {
         if !self.search_applies_move() {
             return false;
         }
-        let book = Book::from_config(&self.book_config);
         let ply = self.move_stack.len() as u32;
-        let Some(mv) = book.probe(&self.board, ply, &mut self.book_rng) else {
+        let Some(mv) = self.book.probe(&self.board, ply, &mut self.book_rng) else {
             return false;
         };
         self.search_stm = Some(self.board.side_to_move());
@@ -1585,7 +1584,7 @@ mod tests {
     fn eval_search_does_not_block_bot_go() {
         let mut s = EngineSession::new();
         // Disable the book so this exercises the search-threading path.
-        s.book_config.enabled = false;
+        s.book = Book::disabled();
         s.set_mode(PlayMode::PlayerVsBot {
             human: Color::White,
         });
@@ -1641,7 +1640,7 @@ mod tests {
     fn disabled_book_falls_through_to_search() {
         crate::lookup::initialize();
         let mut s = EngineSession::new();
-        s.book_config.enabled = false;
+        s.book = Book::disabled();
         s.set_mode(PlayMode::BotVsBot);
         s.go(GoLimits {
             depth: Some(1),

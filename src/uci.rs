@@ -24,19 +24,27 @@ struct UciState {
     network: Arc<Network>,
     eval_file: String,
     /// Opening-book settings (P7-06). `OwnBook`/`BookFile`/`BookDepth`.
-    book: BookConfig,
+    book_config: BookConfig,
+    /// Ready-to-probe book built from [`Self::book_config`].
+    opening_book: Book,
     /// PRNG for weighted book selection.
     book_rng: BookRng,
 }
 
+fn refresh_opening_book(state: &mut UciState) {
+    state.opening_book = Book::from_config(&state.book_config);
+}
+
 impl Default for UciState {
     fn default() -> Self {
+        let book_config = BookConfig::default();
         Self {
             move_overhead_ms: DEFAULT_MOVE_OVERHEAD_MS,
             threads: 1,
             network: Network::embedded_shared(),
             eval_file: String::new(),
-            book: BookConfig::default(),
+            book_config: book_config.clone(),
+            opening_book: Book::from_config(&book_config),
             book_rng: BookRng::from_entropy(),
         }
     }
@@ -106,9 +114,10 @@ pub fn message_loop() {
 
                 // Opening book: play a book move immediately when OwnBook is on
                 // and we are still within BookDepth (P7-06).
-                if state.book.enabled {
-                    let book = Book::from_config(&state.book);
-                    if let Some(mv) = book.probe(&board, game_ply(&board), &mut state.book_rng) {
+                if state.opening_book.is_enabled() {
+                    if let Some(mv) =
+                        state.opening_book.probe(&board, game_ply(&board), &mut state.book_rng)
+                    {
                         let _ = writeln!(stdout, "info string book move {mv}");
                         let _ = writeln!(stdout, "bestmove {mv}");
                         let _ = stdout.flush();
@@ -231,20 +240,24 @@ fn apply_setoption(line: &str, tt: &mut TranspositionTable, state: &mut UciState
             }
         }
         "OwnBook" => {
-            state.book.enabled = matches!(value.to_ascii_lowercase().as_str(), "true" | "on" | "1");
+            state.book_config.enabled =
+                matches!(value.to_ascii_lowercase().as_str(), "true" | "on" | "1");
+            refresh_opening_book(state);
         }
         "BookFile" => {
             let path = tokens[val_i + 1..].join(" ");
             if path.is_empty() || path == "<none>" || path == "None" || path == "<empty>" {
-                state.book.file = None;
+                state.book_config.file = None;
             } else {
-                state.book.file = Some(PathBuf::from(path));
+                state.book_config.file = Some(PathBuf::from(path));
             }
+            refresh_opening_book(state);
         }
         "BookDepth" => {
             if let Ok(n) = value.parse::<u32>() {
-                state.book.max_plies = n.min(60);
+                state.book_config.max_plies = n.min(60);
             }
+            refresh_opening_book(state);
         }
         _ => {}
     }
@@ -398,9 +411,11 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let mut state = UciState::default();
         apply_setoption("setoption name OwnBook value false", &mut tt, &mut state);
-        assert!(!state.book.enabled);
+        assert!(!state.book_config.enabled);
+        assert!(!state.opening_book.is_enabled());
         apply_setoption("setoption name OwnBook value true", &mut tt, &mut state);
-        assert!(state.book.enabled);
+        assert!(state.book_config.enabled);
+        assert!(state.opening_book.is_enabled());
     }
 
     #[test]
@@ -408,10 +423,11 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let mut state = UciState::default();
         apply_setoption("setoption name BookDepth value 8", &mut tt, &mut state);
-        assert_eq!(state.book.max_plies, 8);
+        assert_eq!(state.book_config.max_plies, 8);
+        assert_eq!(state.opening_book.max_plies(), 8);
         apply_setoption("setoption name BookFile value /tmp/book.bin", &mut tt, &mut state);
-        assert_eq!(state.book.file, Some(PathBuf::from("/tmp/book.bin")));
+        assert_eq!(state.book_config.file, Some(PathBuf::from("/tmp/book.bin")));
         apply_setoption("setoption name BookFile value <none>", &mut tt, &mut state);
-        assert_eq!(state.book.file, None);
+        assert_eq!(state.book_config.file, None);
     }
 }

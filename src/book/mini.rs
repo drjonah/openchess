@@ -57,6 +57,128 @@ const LINES: &[Line] = &[
             ("e7e6", 20),
         ],
     ),
+    // White's second move after common Black replies (ply 2).
+    (
+        &["e2e4", "e7e5"],
+        &[("g1f3", 75), ("b1c3", 15), ("d2d4", 10)],
+    ),
+    (
+        &["e2e4", "c7c5"],
+        &[("g1f3", 80), ("b1c3", 15), ("d2d4", 5)],
+    ),
+    (
+        &["e2e4", "e7e6"],
+        &[("d2d4", 90), ("b1c3", 5), ("g1f3", 5)],
+    ),
+    (
+        &["e2e4", "c7c6"],
+        &[("d2d4", 90), ("b1c3", 5), ("g1f3", 5)],
+    ),
+    (
+        &["e2e4", "d7d5"],
+        &[("e4d5", 70), ("b1c3", 20), ("d2d4", 10)],
+    ),
+    (
+        &["e2e4", "g7g6"],
+        &[("d2d4", 75), ("d2d3", 15), ("g1f3", 10)],
+    ),
+    (
+        &["d2d4", "g8f6"],
+        &[("c2c4", 55), ("g1f3", 30), ("c2c3", 10), ("b1c3", 5)],
+    ),
+    (
+        &["d2d4", "d7d5"],
+        &[("c2c4", 60), ("g1f3", 25), ("c2c3", 10), ("b1c3", 5)],
+    ),
+    (
+        &["d2d4", "e7e6"],
+        &[("c2c4", 70), ("g1f3", 20), ("b1c3", 10)],
+    ),
+    (
+        &["d2d4", "g7g6"],
+        &[("c2c4", 60), ("g1f3", 30), ("b1c3", 10)],
+    ),
+    (
+        &["g1f3", "d7d5"],
+        &[("d2d4", 45), ("c2c4", 40), ("g2g3", 10), ("b1c3", 5)],
+    ),
+    (
+        &["g1f3", "g8f6"],
+        &[("c2c4", 55), ("d2d4", 30), ("b1c3", 10), ("g2g3", 5)],
+    ),
+    (
+        &["c2c4", "e7e5"],
+        &[("b1c3", 45), ("g1f3", 35), ("d2d4", 15), ("g2g3", 5)],
+    ),
+    (
+        &["c2c4", "g8f6"],
+        &[("b1c3", 45), ("g1f3", 35), ("e2e4", 15), ("g2g3", 5)],
+    ),
+    (
+        &["c2c4", "c7c5"],
+        &[("g1f3", 55), ("d2d4", 30), ("b1c3", 10), ("e2e4", 5)],
+    ),
+    // Black's second move after principled White second moves (ply 3).
+    (
+        &["e2e4", "e7e5", "g1f3"],
+        &[("b8c6", 80), ("g8f6", 15), ("d7d6", 5)],
+    ),
+    (
+        &["e2e4", "c7c5", "g1f3"],
+        &[("d7d6", 55), ("b8c6", 30), ("e7e6", 10), ("g7g6", 5)],
+    ),
+    (
+        &["e2e4", "e7e6", "d2d4"],
+        &[("d7d5", 90), ("c7c5", 5), ("g8f6", 5)],
+    ),
+    (
+        &["e2e4", "c7c6", "d2d4"],
+        &[("d7d5", 90), ("g8f6", 5), ("e7e6", 5)],
+    ),
+    (
+        &["d2d4", "g8f6", "c2c4"],
+        &[("e7e6", 45), ("g7g6", 35), ("d7d5", 15), ("c7c5", 5)],
+    ),
+    (
+        &["d2d4", "d7d5", "c2c4"],
+        &[("e7e6", 50), ("c7c6", 25), ("d5c4", 15), ("g8f6", 10)],
+    ),
+    // White's third move in the main open-game and Sicilian lines (ply 4).
+    (
+        &["e2e4", "e7e5", "g1f3", "b8c6"],
+        &[("f1b5", 45), ("f1c4", 35), ("d2d4", 15), ("b1c3", 5)],
+    ),
+    (
+        &["e2e4", "c7c5", "g1f3", "d7d6"],
+        &[("d2d4", 60), ("b1c3", 25), ("c2c3", 15)],
+    ),
+    (
+        &["e2e4", "e7e6", "d2d4", "d7d5"],
+        &[("b1c3", 50), ("e4e5", 30), ("g1f3", 15), ("c2c3", 5)],
+    ),
+    (
+        &["d2d4", "g8f6", "c2c4", "e7e6"],
+        &[("b1c3", 45), ("g1f3", 35), ("a2a3", 10), ("f2f3", 10)],
+    ),
+    // Black's third move in the Ruy Lopez and Open Sicilian (ply 5).
+    (
+        &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"],
+        &[("a7a6", 85), ("g8f6", 10), ("f8c5", 5)],
+    ),
+    (
+        &["e2e4", "c7c5", "g1f3", "d7d6", "d2d4"],
+        &[("c5d4", 90), ("g8f6", 5), ("b8c6", 5)],
+    ),
+    // White's fourth move in the Morphy Ruy Lopez (ply 6).
+    (
+        &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6"],
+        &[("b5a4", 90), ("b5c6", 5), ("b5d3", 5)],
+    ),
+    // Black's fourth move vs the Morphy Defence (ply 7).
+    (
+        &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4"],
+        &[("g8f6", 85), ("b7b5", 10), ("f8e7", 5)],
+    ),
 ];
 
 /// Build the mini book table. Requires [`crate::lookup::initialize`].
@@ -119,5 +241,41 @@ mod tests {
                 bm.uci
             );
         }
+    }
+
+    #[test]
+    fn authored_lines_are_legal() {
+        lookup::initialize();
+        for (moves, candidates) in LINES {
+            let mut board = Board::startpos();
+            for uci in *moves {
+                let mv = board
+                    .parse_uci_move(uci)
+                    .unwrap_or_else(|_| panic!("illegal prefix move {uci}"));
+                board.make(mv);
+            }
+            let legal = board.legal_moves();
+            for (uci, weight) in *candidates {
+                assert!(*weight > 0, "zero weight for {uci}");
+                let mv = board
+                    .parse_uci_move(uci)
+                    .unwrap_or_else(|_| panic!("illegal book move {uci}"));
+                assert!(legal.contains(&mv), "book move {uci} not legal");
+            }
+        }
+    }
+
+    #[test]
+    fn open_game_has_white_third_move() {
+        lookup::initialize();
+        let table = table();
+        let mut board = Board::startpos();
+        for uci in ["e2e4", "e7e5", "g1f3", "b8c6"] {
+            board.make(board.parse_uci_move(uci).unwrap());
+        }
+        let entry = table.get(&board.key()).expect("1.e4 e5 2.Nf3 Nc6 missing");
+        let ucis: Vec<&str> = entry.iter().map(|bm| bm.uci.as_str()).collect();
+        assert!(ucis.contains(&"f1b5"), "Ruy Lopez missing from mini book");
+        assert!(ucis.contains(&"f1c4"), "Italian missing from mini book");
     }
 }

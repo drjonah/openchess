@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use crate::config::SideStrength;
+use crate::book::Book;
 use crate::types::Color;
 
 use super::profile::ArenaProfile;
@@ -35,6 +36,8 @@ pub struct ArenaConfig {
     pub profiles: Vec<ArenaProfile>,
     /// Swap colors on odd slots so each profile plays both sides.
     pub alternate_colors: bool,
+    /// Probe the embedded opening book before search (default on, like TUI BvB).
+    pub use_book: bool,
 }
 
 impl Default for ArenaConfig {
@@ -54,6 +57,7 @@ impl Default for ArenaConfig {
             hash_mb: DEFAULT_HASH_MB,
             profiles: Vec::new(),
             alternate_colors: true,
+            use_book: true,
         }
     }
 }
@@ -98,6 +102,9 @@ impl Arena {
             }
             let mut slot = GameSlot::new(i, white, black, ply_limit);
             slot.profile = profile;
+            if !config.use_book {
+                slot.set_book(Book::disabled());
+            }
             slots.push(slot);
         }
 
@@ -165,7 +172,7 @@ impl Arena {
                 }
                 let idx = (self.scan_start + k) % n;
                 if self.slots[idx].is_runnable() {
-                    self.slots[idx].begin_search(self.hash_mb);
+                    events.extend(self.slots[idx].begin_search(self.hash_mb));
                     self.scan_start = (idx + 1) % n;
                     capacity -= 1;
                 }
@@ -322,6 +329,7 @@ mod tests {
             black: s,
             ply_limit: 80,
             hash_mb: 1,
+            use_book: false,
             ..ArenaConfig::default()
         });
         // First tick starts exactly one search (serial default).
@@ -343,6 +351,7 @@ mod tests {
             ply_limit: 80,
             concurrency: 3,
             hash_mb: 1,
+            use_book: false,
             ..ArenaConfig::default()
         };
         let mut arena = Arena::from_config(&config);

@@ -237,6 +237,7 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
         hash_mb,
         profiles: profiles.profiles,
         alternate_colors,
+        use_book: true,
     };
 
     Ok(ParsedOptions {
