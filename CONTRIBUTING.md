@@ -30,6 +30,13 @@ cargo build --release
 
 Requires [cutechess-cli](https://github.com/cutechess/cutechess) on `PATH`.
 
+## Opening book
+
+- **Play / TUI / Lichess:** `OwnBook` on by default (embedded mini + EPD graph).
+- **SPRT / strength PRs:** keep `OwnBook false` (see [`testing/README.md`](testing/README.md)).
+- **Polyglot:** set `book.file` / UCI `BookFile` to a `.bin` path (P10-05).
+- **Deep repertoire:** set `book.repertoire: true` and optional `book.style` (`mixed`/`solid`/`aggressive`), or UCI `BookRepertoire` / `BookStyle`. Authored lines live in [`src/book/repertoire.rs`](src/book/repertoire.rs) — see that module's docs for adding openings.
+
 ## Scope notes
 
 - One selective-search feature at a time (see [research/tasks.md](research/tasks.md)).

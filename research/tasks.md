@@ -701,21 +701,21 @@ flowchart TB
   - **Research:** [openings.md §3 Option C §4](./openings.md#option-c--fix-abort-fallback-required-regardless)  
   - **Note:** `Limits.min_opening_depth` + `ThreadData::hard_abort_now`; hard abort deferred while `completed_depth < floor`, bounded by `opening_hard_cap` (≥2s / 30× hard). Config `engine.opening_floor_depth` (default 4); TUI applies it on book miss for the first `OPENING_PHASE_PLIES` plies.
 
-- [ ] **P10-05** — Polyglot book loader  
+- [x] **P10-05** — Polyglot book loader  
   - **Deps:** P10-02, P1-09  
   - **Parallel-ok:** P10-03, P7-06  
   - **Deliverable:** Read `.bin` Polyglot entries; weighted random among entries above min weight; `BookFile` path in config  
   - **Acceptance:** Loads a public Polyglot book; startpos probe matches known main lines; corrupt/missing file falls back to mini book or search  
   - **Research:** [openings.md §3 Option A](./openings.md#option-a--internal-opening-book-recommended-medium-term) · [Polyglot format](https://www.chessprogramming.org/Polyglot)  
-  - **Note:** Follow-up. Wiring in place: `BookConfig.file` + UCI `BookFile` route through `book::load_file`, which currently errors → falls back to the embedded default book. Needs the Polyglot 781-entry Zobrist array (distinct from `Board::key()`), 16-byte entry parsing, and castling move decode.
+  - **Note:** `src/book/polyglot.rs` — separate 781-entry Zobrist (`polyglot_key`, startpos `0x463B96181691FC9C`), 16-byte BE entries, castling king→rook decode; `Book::from_config` uses a Polyglot backend when `BookFile` loads, else falls back to the embedded table.
 
-- [ ] **P10-06** — Lichess bot book injection  
+- [x] **P10-06** — Lichess bot book injection  
   - **Deps:** P10-02, P9-03  
   - **Parallel-ok:** P10-05  
   - **Deliverable:** Game handler probes book before `search::go`; optional online Lichess opening explorer stub documented for later  
   - **Acceptance:** Casual bot game move 1 from book; clock still decrements correctly; book off reproduces search-only behavior  
   - **Research:** [LICHESS §14 #4](./LICHESS.md#14-open-questions) · [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing)  
-  - **Note:** Blocked on **P9-03** (single-game handler not yet implemented). The reusable `Book::probe` API (P10-02) is ready to drop into the game loop once P9-03 lands.
+  - **Note:** `GameDriver::pick_move` probes via `Book::probe_varied` before search; CLI `--no-own-book` / `--book-file` / `--repertoire`; online explorer still deferred.
 
 - [x] **P10-07** — SPRT vs play book policy  
   - **Deps:** P10-02, P8-03, P7-06  
@@ -725,28 +725,29 @@ flowchart TB
   - **Research:** [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing) · chesswiki Opening book (testing)  
   - **Note:** `sprt.sh` now passes `option.OwnBook=false` (EPD seeding unchanged); `testing/README.md` documents the SPRT-vs-play separation.
 
-- [ ] **P10-08** — Curated opening repertoire (deep named lines)  
+- [x] **P10-08** — Curated opening repertoire (deep named lines)  
   - **Deps:** P10-01, P10-02  
   - **Parallel-ok:** P10-05  
   - **Deliverable:** Extend the embedded book beyond first moves with specific, named main lines to a useful depth (~8–12 plies) for **both colors** — e.g. White: `1.e4` (Ruy Lopez / Italian), `1.d4` (QGD); Black vs `1.e4`: Sicilian (a chosen main line, e.g. Najdorf), vs `1.d4`: KID / QGD. Author lines as UCI/SAN sequences with per-branch weights + a human-readable opening name; replay from startpos (no Zobrist key literals). Keep it separate from the shallow default so play/SPRT behavior is unchanged unless selected.  
   - **Acceptance:** From startpos the engine follows a complete named main line for ≥ 8 plies before search takes over; every line is legal and reaches its intended tabiya; regression test replays each line and asserts the final position/opening name.  
   - **Research:** [openings.md §3 Option B](./openings.md#option-b--tiny-hardcoded-first-move-table-recommended-short-term) · [openings.md §5.1](./openings.md#51-what-to-include-early) · chesswiki Opening Book  
-  - **Note:** Follow-up feature (do not fold into the shallow default). Today's book only covers White move 1 + Black's first reply; this task adds real theory depth. Consider whether to hand-curate (this task) or defer to a loaded Polyglot book (P10-05).
+  - **Note:** `src/book/repertoire.rs` — opt-in via `book.repertoire` / UCI `BookRepertoire`; shallow default unchanged.
 
-- [ ] **P10-09** — Repertoire authoring format + validation  
+- [x] **P10-09** — Repertoire authoring format + validation  
   - **Deps:** P10-08  
   - **Parallel-ok:** P10-05  
   - **Deliverable:** A clear in-tree format for defining repertoire lines (name, move sequence, weights, side) plus a validation harness that replays every authored line, checks legality and transposition consistency (same key ⇒ merged candidates), and flags dead/duplicate branches. Document how to add or edit an opening.  
   - **Acceptance:** `cargo test` fails if any authored line is illegal or mislabeled; contributor docs explain adding a new opening in one place.  
-  - **Research:** [openings.md §5.1](./openings.md#51-what-to-include-early)
+  - **Research:** [openings.md §5.1](./openings.md#51-what-to-include-early)  
+  - **Note:** `RepertoireLine` + module docs in `repertoire.rs`; CONTRIBUTING opening-book section.
 
-- [ ] **P10-10** — Repertoire selection & variety policy  
+- [x] **P10-10** — Repertoire selection & variety policy  
   - **Deps:** P10-08  
   - **Parallel-ok:** P10-05, P10-06  
   - **Deliverable:** Policy + config for choosing among competing "best" lines: per-side repertoire selection (e.g. style: solid vs aggressive), weighting between equally-theoretical branches, and anti-repetition so the bot does not play the identical game every time. Expose via config/UCI where it makes sense.  
   - **Acceptance:** Over N games from the same start the bot varies its repertoire per the configured weights; a fixed seed still reproduces a game for testing.  
-  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module) · chesswiki Opening Book (move selection)
-
+  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module) · chesswiki Opening Book (move selection)  
+  - **Note:** `BookStyle` + `VarietyState` dampening; UCI `BookStyle`; fixed `BookRng` seed remains deterministic.
 ---
 
 ## Openings (future)

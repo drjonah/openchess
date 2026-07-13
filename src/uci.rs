@@ -1,7 +1,7 @@
 //! UCI protocol loop with options and debug helpers (P7-01 / P7-03).
 
 use crate::board::Board;
-use crate::book::{Book, BookConfig, BookRng};
+use crate::book::{Book, BookConfig, BookRng, VarietyState};
 use crate::eval::{self, Network};
 use crate::search::{self, Limits};
 use crate::time::DEFAULT_MOVE_OVERHEAD_MS;
@@ -29,6 +29,8 @@ struct UciState {
     opening_book: Book,
     /// PRNG for weighted book selection.
     book_rng: BookRng,
+    /// Soft anti-repetition across games (P10-10).
+    book_variety: VarietyState,
 }
 
 fn refresh_opening_book(state: &mut UciState) {
@@ -46,6 +48,7 @@ impl Default for UciState {
             book_config: book_config.clone(),
             opening_book: Book::from_config(&book_config),
             book_rng: BookRng::from_entropy(),
+            book_variety: VarietyState::default(),
         }
     }
 }
@@ -97,6 +100,14 @@ pub fn message_loop() {
                     stdout,
                     "option name BookDepth type spin default 16 min 0 max 60"
                 );
+                let _ = writeln!(
+                    stdout,
+                    "option name BookRepertoire type check default false"
+                );
+                let _ = writeln!(
+                    stdout,
+                    "option name BookStyle type combo default mixed var mixed var solid var aggressive"
+                );
                 let _ = writeln!(stdout, "uciok");
             }
             "isready" => {
@@ -115,9 +126,12 @@ pub fn message_loop() {
                 // Opening book: play a book move immediately when OwnBook is on
                 // and we are still within BookDepth (P7-06).
                 if state.opening_book.is_enabled() {
-                    if let Some(mv) =
-                        state.opening_book.probe(&board, game_ply(&board), &mut state.book_rng)
-                    {
+                    if let Some(mv) = state.opening_book.probe_varied(
+                        &board,
+                        game_ply(&board),
+                        &mut state.book_rng,
+                        Some(&mut state.book_variety),
+                    ) {
                         let _ = writeln!(stdout, "info string book move {mv}");
                         let _ = writeln!(stdout, "bestmove {mv}");
                         let _ = stdout.flush();
@@ -257,6 +271,17 @@ fn apply_setoption(line: &str, tt: &mut TranspositionTable, state: &mut UciState
             if let Ok(n) = value.parse::<u32>() {
                 state.book_config.max_plies = n.min(60);
             }
+            refresh_opening_book(state);
+        }
+        "BookRepertoire" => {
+            state.book_config.repertoire =
+                matches!(value.to_ascii_lowercase().as_str(), "true" | "on" | "1");
+            refresh_opening_book(state);
+        }
+        "BookStyle" => {
+            state.book_config.style = crate::book::repertoire::BookStyle::parse(value)
+                .as_str()
+                .into();
             refresh_opening_book(state);
         }
         _ => {}

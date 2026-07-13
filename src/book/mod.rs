@@ -6,21 +6,22 @@
 //! never produce an illegal move.
 //!
 //! Backends:
-//! - [`mini`] — a tiny embedded first-move table (P10-01), always available.
-//! - [`epd`] — the embedded `testing/books/openings.epd` set, expanded into a
-//!   Zobrist-keyed move graph (P10-03).
-//!
-//! The default book merges the mini table with the EPD graph. A `BookFile` path
-//! (Polyglot `.bin` — P10-05) may extend this later; unknown/broken files fall
-//! back to the embedded default so play never breaks.
+//! - [`mini`] — shallow embedded first-move table (P10-01), always in the default.
+//! - [`epd`] — embedded `testing/books/openings.epd` move graph (P10-03).
+//! - [`polyglot`] — optional Polyglot `.bin` file via `BookFile` (P10-05).
+//! - [`repertoire`] — opt-in deep named lines (P10-08..10); off by default.
 
 pub mod epd;
 pub mod mini;
+pub mod polyglot;
+pub mod repertoire;
 
 use crate::board::Board;
 use crate::types::{Key, Move};
+use polyglot::PolyglotBook;
+use repertoire::BookStyle;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -41,7 +42,7 @@ impl BookMove {
     }
 }
 
-/// Zobrist-keyed table of weighted book moves.
+/// Zobrist-keyed table of weighted book moves ([`Board::key`], not Polyglot).
 pub type BookTable = HashMap<Key, Vec<BookMove>>;
 
 /// Persisted book settings (serde; lives inside [`crate::config::Config`]).
@@ -54,6 +55,11 @@ pub struct BookConfig {
     pub max_plies: u32,
     /// Optional Polyglot `.bin` path; `None` uses the embedded default book.
     pub file: Option<PathBuf>,
+    /// Opt-in deep curated repertoire (P10-08). Off by default so SPRT/default
+    /// play stay on the shallow mini+EPD book.
+    pub repertoire: bool,
+    /// Repertoire flavour: `mixed`, `solid`, or `aggressive` (P10-10).
+    pub style: String,
 }
 
 impl Default for BookConfig {
@@ -62,14 +68,21 @@ impl Default for BookConfig {
             enabled: true,
             max_plies: 16,
             file: None,
+            repertoire: false,
+            style: BookStyle::Mixed.as_str().into(),
         }
     }
 }
 
 impl BookConfig {
-    /// Clamp `max_plies` to a sane range (0 disables via ply check).
+    /// Clamp `max_plies` and normalise style.
     pub fn clamp(&mut self) {
         self.max_plies = self.max_plies.min(60);
+        self.style = BookStyle::parse(&self.style).as_str().into();
+    }
+
+    pub fn book_style(&self) -> BookStyle {
+        BookStyle::parse(&self.style)
     }
 }
 
@@ -115,31 +128,105 @@ impl Default for BookRng {
     }
 }
 
+/// Soft anti-repetition across games (P10-10).
+///
+/// Remembers recent root book moves and dampens their weights on the next probe
+/// from the same position so the bot does not repeat the identical opening every
+/// game. A fixed [`BookRng`] seed still reproduces a full game when this state
+/// is fresh / unused.
+#[derive(Clone, Debug, Default)]
+pub struct VarietyState {
+    recent: VecDeque<String>,
+}
+
+impl VarietyState {
+    const CAP: usize = 3;
+
+    pub fn record(&mut self, mv: Move) {
+        self.recent.push_back(mv.to_string());
+        while self.recent.len() > Self::CAP {
+            self.recent.pop_front();
+        }
+    }
+
+    fn dampen(&self, candidates: &mut [(Move, u32)]) {
+        for (mv, weight) in candidates.iter_mut() {
+            if self.recent.iter().any(|uci| uci == &mv.to_string()) {
+                *weight = (*weight / 4).max(1);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+enum Backend {
+    Table(Arc<BookTable>),
+    Polyglot(PolyglotBook),
+}
+
 /// An opening book ready for probing.
 #[derive(Clone)]
 pub struct Book {
     config: BookConfig,
-    table: Arc<BookTable>,
+    backend: Backend,
+}
+
+impl std::fmt::Debug for Book {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Book")
+            .field("enabled", &self.config.enabled)
+            .field("max_plies", &self.config.max_plies)
+            .field("repertoire", &self.config.repertoire)
+            .field("style", &self.config.style)
+            .field("file", &self.config.file)
+            .field(
+                "backend",
+                &match &self.backend {
+                    Backend::Table(_) => "table",
+                    Backend::Polyglot(_) => "polyglot",
+                },
+            )
+            .finish()
+    }
 }
 
 impl Book {
     /// Build a book from settings.
     ///
-    /// Disabled config yields an empty book. A configured `file` is loaded and,
-    /// on any error, falls back to the embedded default book. Requires
-    /// [`crate::lookup::initialize`] to have run (move generation is used to
-    /// build and validate entries).
+    /// Disabled config yields an empty book. A configured `file` loads a Polyglot
+    /// `.bin` and, on any error, falls back to the embedded default. With
+    /// `repertoire: true` and no file, the deep repertoire is merged into the
+    /// shallow default. Requires [`crate::lookup::initialize`].
     pub fn from_config(config: &BookConfig) -> Self {
-        let table = if !config.enabled {
-            Arc::new(BookTable::new())
-        } else if let Some(path) = &config.file {
-            load_file(path).unwrap_or_else(|_| default_table())
+        let mut config = config.clone();
+        config.clamp();
+        if !config.enabled {
+            return Self {
+                config,
+                backend: Backend::Table(Arc::new(BookTable::new())),
+            };
+        }
+        if let Some(path) = &config.file {
+            match PolyglotBook::load(path) {
+                Ok(pg) => {
+                    return Self {
+                        config,
+                        backend: Backend::Polyglot(pg),
+                    };
+                }
+                Err(e) => {
+                    eprintln!("info string book file load failed ({e}); using embedded book");
+                }
+            }
+        }
+        let table = if config.repertoire {
+            repertoire_table(config.book_style())
         } else {
             default_table()
         };
         Self {
-            config: config.clone(),
-            table,
+            config,
+            backend: Backend::Table(table),
         }
     }
 
@@ -147,7 +234,19 @@ impl Book {
     pub fn embedded() -> Self {
         Self {
             config: BookConfig::default(),
-            table: default_table(),
+            backend: Backend::Table(default_table()),
+        }
+    }
+
+    /// Embedded default merged with the deep repertoire for `style`.
+    pub fn with_repertoire(style: BookStyle) -> Self {
+        Self {
+            config: BookConfig {
+                repertoire: true,
+                style: style.as_str().into(),
+                ..BookConfig::default()
+            },
+            backend: Backend::Table(repertoire_table(style)),
         }
     }
 
@@ -158,7 +257,7 @@ impl Book {
                 enabled: false,
                 ..BookConfig::default()
             },
-            table: Arc::new(BookTable::new()),
+            backend: Backend::Table(Arc::new(BookTable::new())),
         }
     }
 
@@ -170,63 +269,100 @@ impl Book {
         self.config.max_plies
     }
 
+    pub fn config(&self) -> &BookConfig {
+        &self.config
+    }
+
     /// Probe for a weighted book move at `board`, having already played `ply`
     /// half-moves. Returns `None` when disabled, past `max_plies`, on a book
     /// miss, or when no candidate is currently legal.
     pub fn probe(&self, board: &Board, ply: u32, rng: &mut BookRng) -> Option<Move> {
+        self.probe_varied(board, ply, rng, None)
+    }
+
+    /// Like [`Self::probe`], optionally dampening recently played root moves
+    /// (P10-10 anti-repetition). Records the chosen move into `variety` when set.
+    pub fn probe_varied(
+        &self,
+        board: &Board,
+        ply: u32,
+        rng: &mut BookRng,
+        variety: Option<&mut VarietyState>,
+    ) -> Option<Move> {
         if !self.config.enabled || ply >= self.config.max_plies {
             return None;
         }
-        let candidates = self.table.get(&board.key())?;
-        let resolved = self.resolve_legal(board, candidates);
+        let mut resolved = self.resolve_legal(board);
         if resolved.is_empty() {
             return None;
+        }
+        if let Some(v) = variety.as_ref() {
+            v.dampen(&mut resolved);
         }
         let total: u64 = resolved.iter().map(|(_, w)| u64::from(*w)).sum();
         if total == 0 {
             return None;
         }
         let mut pick = rng.below(total);
+        let mut chosen = resolved[0].0;
         for (mv, weight) in &resolved {
             let w = u64::from(*weight);
             if pick < w {
-                return Some(*mv);
+                chosen = *mv;
+                break;
             }
             pick -= w;
         }
-        Some(resolved[0].0)
+        if let Some(v) = variety {
+            if ply == 0 {
+                v.record(chosen);
+            }
+        }
+        Some(chosen)
     }
 
     /// Highest-weight legal book move (deterministic), ignoring ply/enabled.
-    ///
-    /// Useful for tests and tooling; play uses [`Self::probe`].
     pub fn best_move(&self, board: &Board) -> Option<Move> {
-        let candidates = self.table.get(&board.key())?;
-        self.resolve_legal(board, candidates)
+        self.resolve_legal(board)
             .into_iter()
             .max_by_key(|(_, w)| *w)
             .map(|(mv, _)| mv)
     }
 
-    /// Whether `mv` is a listed book move for `board` (for move classification,
-    /// OPEN-01). Ignores the enabled flag and ply so post-game analysis can tag
-    /// theory even when the bot did not use the book.
+    /// Whether `mv` is a listed book move for `board` (OPEN-01 classification).
     pub fn is_book_move(&self, board: &Board, mv: Move) -> bool {
-        self.table.get(&board.key()).is_some_and(|candidates| {
-            candidates
-                .iter()
-                .any(|bm| board.parse_uci_move(&bm.uci).ok() == Some(mv))
-        })
+        match &self.backend {
+            Backend::Table(table) => table.get(&board.key()).is_some_and(|candidates| {
+                candidates
+                    .iter()
+                    .any(|bm| board.parse_uci_move(&bm.uci).ok() == Some(mv))
+            }),
+            Backend::Polyglot(pg) => pg.is_book_move(board, mv),
+        }
     }
 
-    /// Resolve candidates to `(legal Move, weight)` pairs, dropping unresolved,
-    /// illegal, or zero-weight entries.
-    fn resolve_legal(&self, board: &Board, candidates: &[BookMove]) -> Vec<(Move, u32)> {
-        candidates
-            .iter()
-            .filter(|bm| bm.weight > 0)
-            .filter_map(|bm| board.parse_uci_move(&bm.uci).ok().map(|mv| (mv, bm.weight)))
-            .collect()
+    fn resolve_legal(&self, board: &Board) -> Vec<(Move, u32)> {
+        match &self.backend {
+            Backend::Table(table) => table
+                .get(&board.key())
+                .map(|candidates| {
+                    candidates
+                        .iter()
+                        .filter(|bm| bm.weight > 0)
+                        .filter_map(|bm| {
+                            board.parse_uci_move(&bm.uci).ok().map(|mv| (mv, bm.weight))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Backend::Polyglot(pg) => {
+                // Re-resolve via best-effort probe helpers.
+                pg.candidates_uci(board)
+                    .into_iter()
+                    .filter_map(|bm| board.parse_uci_move(&bm.uci).ok().map(|mv| (mv, bm.weight)))
+                    .collect()
+            }
+        }
     }
 }
 
@@ -244,9 +380,6 @@ pub(crate) fn merge_tables(dst: &mut BookTable, src: BookTable) {
 }
 
 /// Lazily built embedded default table (mini + EPD graph).
-///
-/// [`crate::lookup::initialize`] must run before the first build (engine startup
-/// and tests that touch the book).
 static DEFAULT_TABLE: OnceLock<Arc<BookTable>> = OnceLock::new();
 
 fn default_table() -> Arc<BookTable> {
@@ -257,13 +390,10 @@ fn default_table() -> Arc<BookTable> {
     }))
 }
 
-/// Load a book file by extension. Only Polyglot `.bin` is a placeholder here
-/// (P10-05); everything else errors so the caller falls back to the default.
-fn load_file(path: &std::path::Path) -> Result<Arc<BookTable>, String> {
-    Err(format!(
-        "book file loading not yet implemented for {} (P10-05)",
-        path.display()
-    ))
+fn repertoire_table(style: BookStyle) -> Arc<BookTable> {
+    let mut table = (*default_table()).clone();
+    merge_tables(&mut table, repertoire::table(style));
+    Arc::new(table)
 }
 
 #[cfg(test)]
@@ -299,7 +429,6 @@ mod tests {
         let book = Book::embedded();
         let board = Board::startpos();
         let legal = board.legal_moves();
-        // Every seed must yield a legal, sensible first move.
         for seed in 0..64u64 {
             let mut rng = BookRng::from_seed(seed);
             let mv = book.probe(&board, 0, &mut rng).expect("startpos is in book");
@@ -336,7 +465,6 @@ mod tests {
 
     #[test]
     fn weighted_selection_respects_weights() {
-        // A 90/10 split should favour the heavy move across many seeds.
         init();
         let book = Book::embedded();
         let board = Board::startpos();
@@ -348,8 +476,6 @@ mod tests {
                 e4_count += 1;
             }
         }
-        // e4 carries the largest default weight; it should appear often but
-        // not always (variety), confirming weighting works.
         assert!(e4_count > 40, "e4 chosen too rarely: {e4_count}/400");
         assert!(e4_count < 400, "no variety in book selection");
     }
@@ -373,5 +499,103 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn repertoire_follows_named_line_eight_plies() {
+        init();
+        let book = Book::with_repertoire(BookStyle::Solid);
+        let line = repertoire::line_by_name("Ruy Lopez Morphy").expect("line");
+        assert!(line.moves.len() >= 8);
+        let mut board = Board::startpos();
+        for uci in &line.moves[..8] {
+            assert!(
+                book.is_book_move(&board, board.parse_uci_move(uci).unwrap())
+                    || book.best_move(&board).is_some(),
+                "expected book coverage before {uci}"
+            );
+            let mv = board.parse_uci_move(uci).unwrap();
+            board.make(mv);
+        }
+        assert_eq!(
+            repertoire::opening_name_after(&line.moves[..8]),
+            Some("Ruy Lopez Morphy")
+        );
+    }
+
+    #[test]
+    fn variety_damps_recent_root_moves_but_seed_reproduces() {
+        init();
+        let book = Book::embedded();
+        let board = Board::startpos();
+        let mut variety = VarietyState::default();
+        let mut rng_a = BookRng::from_seed(99);
+        let first = book
+            .probe_varied(&board, 0, &mut rng_a, Some(&mut variety))
+            .unwrap();
+        // Fresh variety + same seed → same first pick.
+        let mut variety2 = VarietyState::default();
+        let mut rng_b = BookRng::from_seed(99);
+        let again = book
+            .probe_varied(&board, 0, &mut rng_b, Some(&mut variety2))
+            .unwrap();
+        assert_eq!(first, again);
+
+        // After recording, the same seed path may still pick it (weights only
+        // dampened), but over many seeds the recorded move should appear less.
+        let recorded = first.to_string();
+        let mut hits_fresh = 0;
+        let mut hits_damped = 0;
+        for seed in 0..200u64 {
+            let mut rng = BookRng::from_seed(seed);
+            if book.probe(&board, 0, &mut rng).unwrap().to_string() == recorded {
+                hits_fresh += 1;
+            }
+            let mut rng = BookRng::from_seed(seed);
+            let mut v = VarietyState::default();
+            v.record(first);
+            if book
+                .probe_varied(&board, 0, &mut rng, Some(&mut v))
+                .unwrap()
+                .to_string()
+                == recorded
+            {
+                hits_damped += 1;
+            }
+        }
+        assert!(
+            hits_damped < hits_fresh,
+            "anti-rep should reduce repeats: damped={hits_damped} fresh={hits_fresh}"
+        );
+    }
+
+    #[test]
+    fn polyglot_file_loads_via_from_config() {
+        init();
+        use std::io::Write;
+        let start = Board::startpos();
+        let key = polyglot::polyglot_key(&start);
+        let e2 = "e2".parse().unwrap();
+        let e4 = "e4".parse().unwrap();
+        let bytes = polyglot::write_bytes(&[(key, polyglot::encode_quiet(e2, e4), 50)]);
+        let dir = std::env::temp_dir().join("openchess_book_cfg");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("t.bin");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+
+        let book = Book::from_config(&BookConfig {
+            file: Some(path),
+            ..BookConfig::default()
+        });
+        assert_eq!(book.best_move(&start).unwrap().to_string(), "e2e4");
+
+        let book = Book::from_config(&BookConfig {
+            file: Some(PathBuf::from("/no/such/openchess_book.bin")),
+            ..BookConfig::default()
+        });
+        assert!(book.best_move(&start).is_some());
     }
 }

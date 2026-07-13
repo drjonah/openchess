@@ -68,6 +68,10 @@ fn print_help() {
          \x20 --accept-rated      Accept rated challenges (default: casual only)\n\
          \x20 --movetime MS       Fixed think time per move (default: use clock)\n\
          \x20 --hash MB           Transposition table size (default: 16)\n\
+         \x20 --no-own-book       Disable opening book (search only)\n\
+         \x20 --book-file PATH    Polyglot `.bin` book file\n\
+         \x20 --repertoire        Enable deep curated repertoire\n\
+         \x20 --book-style S      mixed|solid|aggressive (with --repertoire)\n\
          \x20 --token-env VAR     Env var for API token (default: {DEFAULT_TOKEN_ENV})\n\n\
          challenge options:\n\
          \x20 --clock-limit S     Base clock seconds (default: 300)\n\
@@ -84,6 +88,10 @@ struct RunOptions {
     accept_rated: bool,
     movetime_ms: Option<u64>,
     hash_mb: u32,
+    own_book: bool,
+    book_file: Option<String>,
+    repertoire: bool,
+    book_style: String,
 }
 
 impl Default for RunOptions {
@@ -94,6 +102,10 @@ impl Default for RunOptions {
             accept_rated: false,
             movetime_ms: None,
             hash_mb: 16,
+            own_book: true,
+            book_file: None,
+            repertoire: false,
+            book_style: "mixed".into(),
         }
     }
 }
@@ -121,6 +133,22 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, String> {
             }
             "--hash" => {
                 opts.hash_mb = parse_num(args.get(i + 1), "--hash")? as u32;
+                i += 2;
+            }
+            "--no-own-book" => {
+                opts.own_book = false;
+                i += 1;
+            }
+            "--book-file" => {
+                opts.book_file = Some(take_value(args.get(i + 1), "--book-file")?);
+                i += 2;
+            }
+            "--repertoire" => {
+                opts.repertoire = true;
+                i += 1;
+            }
+            "--book-style" => {
+                opts.book_style = take_value(args.get(i + 1), "--book-style")?;
                 i += 2;
             }
             "--token-env" => {
@@ -168,9 +196,20 @@ fn run_event_loop(args: &[String]) -> Result<(), LichessError> {
         accept_rated: opts.accept_rated,
         ..Default::default()
     };
+    let mut book_cfg = crate::config::Config::load().0.book;
+    book_cfg.enabled = opts.own_book;
+    if let Some(path) = &opts.book_file {
+        book_cfg.file = Some(std::path::PathBuf::from(path));
+    }
+    if opts.repertoire {
+        book_cfg.repertoire = true;
+        book_cfg.style = opts.book_style.clone();
+    }
+    book_cfg.clamp();
     let mut play_options = PlayOptions {
         hash_mb: opts.hash_mb.max(1),
         fixed_movetime: opts.movetime_ms.map(Duration::from_millis),
+        book: crate::book::Book::from_config(&book_cfg),
         ..Default::default()
     };
     // P7-05: keep a positive hard budget (movetime − overhead) on the bot path.
@@ -297,7 +336,7 @@ fn handle_event(
             // again so the per-game stream can resume (LICHESS §11.4).
             if play {
                 eprintln!("lichess: playing game {}", game.game_id);
-                match game::play_game(client, &game.game_id, my_id, *play_options) {
+                match game::play_game(client, &game.game_id, my_id, play_options.clone()) {
                     Ok(()) => {
                         eprintln!("lichess: game {} finished", game.game_id);
                         match pgn::export_game(client, &game.game_id) {

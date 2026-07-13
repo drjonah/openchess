@@ -13,6 +13,7 @@
 use super::client::{Client, NdjsonItem};
 use super::LichessError;
 use crate::board::Board;
+use crate::book::{Book, BookRng, VarietyState};
 use crate::search::{self, Limits};
 use crate::transposition::TranspositionTable;
 use crate::types::{Color, Move};
@@ -21,7 +22,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 /// Options controlling how the bot searches during a game.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PlayOptions {
     /// Network/GUI latency reserve subtracted from the hard budget.
     pub move_overhead: Duration,
@@ -29,6 +30,8 @@ pub struct PlayOptions {
     pub hash_mb: u32,
     /// Fixed think time overriding the clock (tests / simple fixed-time bots).
     pub fixed_movetime: Option<Duration>,
+    /// Opening book (P10-06). Default: embedded OwnBook-on.
+    pub book: Book,
 }
 
 impl Default for PlayOptions {
@@ -37,6 +40,7 @@ impl Default for PlayOptions {
             move_overhead: crate::time::DEFAULT_MOVE_OVERHEAD,
             hash_mb: 16,
             fixed_movetime: None,
+            book: Book::embedded(),
         }
     }
 }
@@ -156,17 +160,22 @@ pub struct GameDriver {
     last_acted_moves: Option<String>,
     options: PlayOptions,
     tt: TranspositionTable,
+    book_rng: BookRng,
+    variety: VarietyState,
 }
 
 impl GameDriver {
     pub fn new(my_id: impl Into<String>, options: PlayOptions) -> Self {
+        let hash_mb = options.hash_mb.max(1) as usize;
         Self {
             my_id: my_id.into(),
             my_color: None,
             initial_fen: startpos_literal(),
             last_acted_moves: None,
             options,
-            tt: TranspositionTable::new(options.hash_mb.max(1) as usize),
+            tt: TranspositionTable::new(hash_mb),
+            book_rng: BookRng::from_entropy(),
+            variety: VarietyState::default(),
         }
     }
 
@@ -226,8 +235,16 @@ impl GameDriver {
         Ok(board)
     }
 
-    /// Run a search for the side to move and return the best legal move.
-    fn pick_move(&self, board: &Board, state: &GameState) -> Option<Move> {
+    /// Probe the opening book, else search, and return the best legal move.
+    fn pick_move(&mut self, board: &Board, state: &GameState) -> Option<Move> {
+        let ply = board.history_len() as u32;
+        if let Some(mv) =
+            self.options
+                .book
+                .probe_varied(board, ply, &mut self.book_rng, Some(&mut self.variety))
+        {
+            return Some(mv);
+        }
         let limits = self.limits_for(state);
         let stop = AtomicBool::new(false);
         let mut search_board = board.clone();
@@ -412,6 +429,42 @@ mod tests {
                 ..Default::default()
             },
             speed: Some("blitz".into()),
+        }
+    }
+
+    #[test]
+    fn book_move_from_startpos_when_enabled() {
+        init();
+        let mut driver = GameDriver::new("openchessbot", PlayOptions::default());
+        let action = driver.on_game_full(&full("openchessbot", "opp", "")).unwrap();
+        match action {
+            GameAction::PlayMove(mv) => {
+                let uci = mv.to_string();
+                assert!(
+                    matches!(uci.as_str(), "e2e4" | "d2d4" | "g1f3" | "c2c4"),
+                    "expected book first move, got {uci}"
+                );
+            }
+            other => panic!("expected book move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn book_off_falls_through_to_search() {
+        init();
+        let opts = PlayOptions {
+            book: Book::disabled(),
+            fixed_movetime: Some(Duration::from_millis(50)),
+            hash_mb: 1,
+            ..Default::default()
+        };
+        let mut driver = GameDriver::new("openchessbot", opts);
+        let action = driver.on_game_full(&full("openchessbot", "opp", "")).unwrap();
+        match action {
+            GameAction::PlayMove(mv) => {
+                assert!(Board::startpos().legal_moves().contains(&mv));
+            }
+            other => panic!("expected a search move, got {other:?}"),
         }
     }
 
