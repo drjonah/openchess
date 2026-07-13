@@ -16,7 +16,6 @@ use crate::lookup;
 use crate::types::{CastlingRights, Color, Move, Piece, PieceType, Square};
 use std::fs;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::Arc;
 
 /// One Polyglot book entry (learn field discarded).
