@@ -39,10 +39,16 @@ pub struct ArenaConfig {
 
 impl Default for ArenaConfig {
     fn default() -> Self {
+        // Depth-only defaults (movetime 0). Do not reuse TUI `SideStrength::default()`,
+        // which includes a wall-clock movetime (~450ms) meant for interactive play.
+        let strength = SideStrength {
+            depth: 6,
+            movetime_ms: 0,
+        };
         Self {
             games: 1,
-            white: SideStrength::default(),
-            black: SideStrength::default(),
+            white: strength.clone(),
+            black: strength,
             ply_limit: DEFAULT_PLY_LIMIT,
             concurrency: 1,
             hash_mb: DEFAULT_HASH_MB,
@@ -86,8 +92,8 @@ impl Arena {
                 let p = &config.profiles[i % config.profiles.len()];
                 (p.white.clone(), p.black.clone(), Some(p.name.clone()))
             };
-            // Swap colors on odd slots so each profile plays both sides.
-            if config.alternate_colors && !config.profiles.is_empty() && i % 2 == 1 {
+            // Swap colors on odd slots so asymmetric strengths / profiles play both sides.
+            if config.alternate_colors && i % 2 == 1 {
                 std::mem::swap(&mut white, &mut black);
             }
             let mut slot = GameSlot::new(i, white, black, ply_limit);
@@ -235,6 +241,26 @@ impl Arena {
             slot.request_step();
         }
     }
+
+    /// Stop every in-flight search and mark unfinished slots aborted.
+    pub fn shutdown(&mut self) {
+        for slot in &mut self.slots {
+            if !slot.is_finished() {
+                slot.abort();
+            }
+        }
+    }
+}
+
+impl Drop for Arena {
+    fn drop(&mut self) {
+        // Ensure worker threads are joined even if the caller abandons mid-run.
+        for slot in &mut self.slots {
+            if slot.is_thinking() {
+                slot.abort();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -253,7 +279,14 @@ mod tests {
     #[test]
     fn four_independent_games_play_to_completion() {
         crate::lookup::initialize();
-        let mut arena = Arena::new(4, strength(1), strength(1), 80);
+        let mut arena = Arena::from_config(&ArenaConfig {
+            games: 4,
+            white: strength(1),
+            black: strength(1),
+            ply_limit: 80,
+            hash_mb: 1,
+            ..ArenaConfig::default()
+        });
         assert_eq!(arena.len(), 4);
         arena.run_to_completion(&mut |_| {});
 
@@ -283,7 +316,14 @@ mod tests {
             depth: 30,
             movetime_ms: 60,
         };
-        let mut arena = Arena::new(4, s.clone(), s, 80);
+        let mut arena = Arena::from_config(&ArenaConfig {
+            games: 4,
+            white: s.clone(),
+            black: s,
+            ply_limit: 80,
+            hash_mb: 1,
+            ..ArenaConfig::default()
+        });
         // First tick starts exactly one search (serial default).
         let _ = arena.tick();
         assert_eq!(arena.thinking_count(), 1);
@@ -302,6 +342,7 @@ mod tests {
             black: s,
             ply_limit: 80,
             concurrency: 3,
+            hash_mb: 1,
             ..ArenaConfig::default()
         };
         let mut arena = Arena::from_config(&config);
@@ -316,7 +357,14 @@ mod tests {
     #[test]
     fn fair_scheduler_advances_all_slots() {
         crate::lookup::initialize();
-        let mut arena = Arena::new(3, strength(1), strength(1), 60);
+        let mut arena = Arena::from_config(&ArenaConfig {
+            games: 3,
+            white: strength(1),
+            black: strength(1),
+            ply_limit: 60,
+            hash_mb: 1,
+            ..ArenaConfig::default()
+        });
         arena.run_to_completion(&mut |_| {});
         for slot in arena.slots() {
             assert!(slot.ply_count() >= 1, "slot {} never moved", slot.id);
@@ -335,6 +383,7 @@ mod tests {
             }],
             alternate_colors: true,
             ply_limit: 40,
+            hash_mb: 1,
             ..ArenaConfig::default()
         };
         let arena = Arena::from_config(&config);
@@ -344,5 +393,32 @@ mod tests {
         assert_eq!(arena.slot(1).unwrap().white.depth, 2);
         assert_eq!(arena.slot(1).unwrap().black.depth, 9);
         assert_eq!(arena.slot(0).unwrap().profile.as_deref(), Some("asym"));
+    }
+
+    #[test]
+    fn cli_style_strengths_also_alternate_colors() {
+        crate::lookup::initialize();
+        let config = ArenaConfig {
+            games: 2,
+            white: strength(10),
+            black: strength(3),
+            alternate_colors: true,
+            ply_limit: 40,
+            hash_mb: 1,
+            ..ArenaConfig::default()
+        };
+        let arena = Arena::from_config(&config);
+        assert_eq!(arena.slot(0).unwrap().white.depth, 10);
+        assert_eq!(arena.slot(0).unwrap().black.depth, 3);
+        assert_eq!(arena.slot(1).unwrap().white.depth, 3);
+        assert_eq!(arena.slot(1).unwrap().black.depth, 10);
+    }
+
+    #[test]
+    fn default_config_is_depth_only() {
+        let cfg = ArenaConfig::default();
+        assert_eq!(cfg.white.movetime_ms, 0);
+        assert_eq!(cfg.black.movetime_ms, 0);
+        assert!(cfg.white.depth >= 1);
     }
 }

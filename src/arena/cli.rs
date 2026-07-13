@@ -30,15 +30,15 @@ pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
     let args: Vec<String> = args.into_iter().collect();
 
     let (sub, rest): (&str, &[String]) = match args.split_first() {
+        Some((first, _)) if matches!(first.as_str(), "-h" | "--help" | "help") => {
+            print_usage();
+            return ExitCode::SUCCESS;
+        }
         Some((first, rest)) if !first.starts_with('-') => (first.as_str(), rest),
         _ => ("watch", args.as_slice()),
     };
 
     match sub {
-        "-h" | "--help" | "help" => {
-            print_usage();
-            ExitCode::SUCCESS
-        }
         "run" => run_batch(rest),
         "watch" => run_watch(rest),
         other => {
@@ -60,12 +60,18 @@ fn run_batch(args: &[String]) -> ExitCode {
     };
 
     let jsonl = opts.jsonl;
+    let total = opts.arena.games.max(1);
     let options = BatchOptions {
         arena: opts.arena,
         pgn_dir: opts.pgn_dir,
     };
 
+    let mut finished = 0usize;
     let mut on_event = |event: &super::slot::SlotEvent| {
+        if matches!(event, super::slot::SlotEvent::Finish { .. }) {
+            finished += 1;
+            eprintln!("arena: finished {finished}/{total}");
+        }
         if jsonl {
             println!("{}", super::export::event_jsonl(event));
         }
@@ -73,16 +79,20 @@ fn run_batch(args: &[String]) -> ExitCode {
 
     match batch::run(&options, &mut on_event) {
         Ok(summary) => {
-            if !jsonl {
-                println!(
-                    "games={} white_wins={} black_wins={} draws={} unfinished={} avg_plies={:.1}",
-                    summary.games,
-                    summary.white_wins,
-                    summary.black_wins,
-                    summary.draws,
-                    summary.unfinished,
-                    summary.avg_plies(),
-                );
+            let line = format!(
+                "games={} white_wins={} black_wins={} draws={} unfinished={} avg_plies={:.1}",
+                summary.games,
+                summary.white_wins,
+                summary.black_wins,
+                summary.draws,
+                summary.unfinished,
+                summary.avg_plies(),
+            );
+            // Keep the human summary on stderr when streaming JSONL on stdout.
+            if jsonl {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
             }
             ExitCode::SUCCESS
         }
@@ -166,18 +176,21 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
     let mut pgn_dir: Option<PathBuf> = None;
     let mut jsonl = false;
     let mut profiles = ProfileSet::default();
+    let mut alternate_colors = true;
 
     let mut i = 0;
     while i < args.len() {
         let flag = args[i].clone();
         match flag.as_str() {
             "--games" => games = parse_usize(&take_value(args, &mut i, &flag)?, &flag)?,
-            "--depth" => shared.depth = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?,
+            "--depth" => {
+                shared.depth = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64)
+            }
             "--movetime" => {
                 shared.movetime_ms = parse_u64(&take_value(args, &mut i, &flag)?, &flag)?
             }
             "--white-depth" => {
-                let v = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?;
+                let v = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64);
                 white.get_or_insert_with(|| shared.clone()).depth = v;
             }
             "--white-movetime" => {
@@ -185,7 +198,7 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
                 white.get_or_insert_with(|| shared.clone()).movetime_ms = v;
             }
             "--black-depth" => {
-                let v = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?;
+                let v = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64);
                 black.get_or_insert_with(|| shared.clone()).depth = v;
             }
             "--black-movetime" => {
@@ -201,6 +214,7 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
             }
             "--pgn-dir" => pgn_dir = Some(PathBuf::from(take_value(args, &mut i, &flag)?)),
             "--jsonl" => jsonl = true,
+            "--no-alternate-colors" => alternate_colors = false,
             "--profile" => {
                 let path = take_value(args, &mut i, &flag)?;
                 profiles = ProfileSet::load(&path).map_err(|e| format!("--profile {path}: {e}"))?;
@@ -222,7 +236,7 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
         concurrency,
         hash_mb,
         profiles: profiles.profiles,
-        alternate_colors: true,
+        alternate_colors,
     };
 
     Ok(ParsedOptions {
@@ -259,18 +273,19 @@ fn print_usage() {
          \x20 run      headless batch; prints a W/D/L summary (exit 0)\n\
          \x20 watch    live text monitor of all games (default)\n\n\
          options:\n\
-         \x20 --games N            number of concurrent games (default 1)\n\
-         \x20 --depth D            search depth for both sides (default 6)\n\
-         \x20 --movetime MS        movetime per move (0 = depth-only)\n\
-         \x20 --white-depth D      White-only depth override\n\
-         \x20 --white-movetime MS  White-only movetime override\n\
-         \x20 --black-depth D      Black-only depth override\n\
-         \x20 --black-movetime MS  Black-only movetime override\n\
-         \x20 --concurrency K      max searches in flight (default 1 = serial)\n\
-         \x20 --hash MB            per-search TT size (default 8)\n\
-         \x20 --max-plies N        adjudicate a draw after N plies (default 400)\n\
-         \x20 --pgn-dir DIR        write one PGN per finished game\n\
-         \x20 --jsonl              emit a JSONL move/finish event stream\n\
-         \x20 --profile FILE       JSON strength profiles assigned across slots"
+         \x20 --games N               number of concurrent games (default 1)\n\
+         \x20 --depth D               search depth for both sides (default 6)\n\
+         \x20 --movetime MS           movetime per move (0 = depth-only)\n\
+         \x20 --white-depth D         White-only depth override\n\
+         \x20 --white-movetime MS     White-only movetime override\n\
+         \x20 --black-depth D         Black-only depth override\n\
+         \x20 --black-movetime MS     Black-only movetime override\n\
+         \x20 --concurrency K         max searches in flight (default 1 = serial)\n\
+         \x20 --hash MB               per-search TT size (default 8)\n\
+         \x20 --max-plies N           adjudicate a draw after N plies (default 400)\n\
+         \x20 --pgn-dir DIR           write one PGN per finished game\n\
+         \x20 --jsonl                 emit a JSONL move/finish event stream\n\
+         \x20 --profile FILE          JSON strength profiles assigned across slots\n\
+         \x20 --no-alternate-colors   keep White/Black strengths fixed (no color swap)"
     );
 }

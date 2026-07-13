@@ -96,6 +96,7 @@ mod tests {
                 white: strength(1),
                 black: strength(1),
                 ply_limit: 60,
+                hash_mb: 1,
                 ..ArenaConfig::default()
             },
             pgn_dir: None,
@@ -129,6 +130,7 @@ mod tests {
                 white: strength(1),
                 black: strength(1),
                 ply_limit: 30,
+                hash_mb: 1,
                 ..ArenaConfig::default()
             },
             pgn_dir: Some(dir.clone()),

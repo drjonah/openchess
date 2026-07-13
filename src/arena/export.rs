@@ -108,7 +108,7 @@ pub fn event_jsonl(event: &SlotEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::runner::Arena;
+    use crate::arena::runner::{Arena, ArenaConfig};
     use crate::config::SideStrength;
 
     fn strength(depth: u32) -> SideStrength {
@@ -121,7 +121,14 @@ mod tests {
     #[test]
     fn pgn_has_headers_and_matches_transcript() {
         crate::lookup::initialize();
-        let mut arena = Arena::new(1, strength(1), strength(1), 20);
+        let mut arena = Arena::from_config(&ArenaConfig {
+            games: 1,
+            white: strength(1),
+            black: strength(1),
+            ply_limit: 20,
+            hash_mb: 1,
+            ..ArenaConfig::default()
+        });
         arena.run_to_completion(&mut |_| {});
         let slot = arena.slot(0).unwrap();
 
