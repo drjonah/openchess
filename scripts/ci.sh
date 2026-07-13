@@ -7,6 +7,9 @@ cd "$(dirname "$0")/.."
 echo "==> cargo test (unit + integration)"
 cargo test
 
+echo "==> lichess feature tests (offline)"
+cargo test --features lichess --lib lichess::
+
 echo "==> bench signature"
 cargo test --lib tools::bench::tests::bench_is_deterministic -- --exact
 

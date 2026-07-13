@@ -74,7 +74,32 @@ pub struct Opponent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Challenger {
+    /// Account id when present (preferred for identity checks).
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: String,
+    /// Player title (`"BOT"`, `"GM"`, …) when set.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub rating: Option<u32>,
+}
+
+impl Challenger {
+    /// True when the challenger is a bot account.
+    pub fn is_bot(&self) -> bool {
+        self.title.as_deref() == Some("BOT")
+    }
+
+    /// True when this challenger is our own account (`id` or `name`).
+    pub fn is_us(&self, my_id: &str) -> bool {
+        let me = my_id.to_ascii_lowercase();
+        self.id
+            .as_deref()
+            .map(|id| id.eq_ignore_ascii_case(&me))
+            .unwrap_or(false)
+            || self.name.eq_ignore_ascii_case(&me)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -123,10 +148,34 @@ mod tests {
         assert_eq!(challenge.speed, "rapid");
         assert!(!challenge.rated);
         assert_eq!(challenge.variant.key, "standard");
+        assert_eq!(challenge.challenger.id.as_deref(), Some("bernstein-2ply"));
         assert_eq!(challenge.challenger.name, "bernstein-2ply");
+        assert!(!challenge.challenger.is_us("openchess-bot"));
+        assert!(challenge.challenger.is_us("bernstein-2ply"));
         let tc = challenge.time_control.unwrap();
         assert_eq!(tc.limit, 300);
         assert_eq!(tc.increment, 1);
+    }
+
+    #[test]
+    fn challenger_is_us_matches_id_or_name() {
+        let by_id = Challenger {
+            id: Some("openchessbot".into()),
+            name: "OpenChessBot".into(),
+            title: Some("BOT".into()),
+            rating: None,
+        };
+        assert!(by_id.is_us("openchessbot"));
+        assert!(by_id.is_us("OpenChessBot"));
+        assert!(!by_id.is_us("other"));
+
+        let name_only = Challenger {
+            id: None,
+            name: "OpenChessBot".into(),
+            title: None,
+            rating: None,
+        };
+        assert!(name_only.is_us("openchessbot"));
     }
 
     #[test]

@@ -24,6 +24,11 @@ const MIN_DEPTH: u32 = 1;
 const MAX_DEPTH: u32 = 64;
 const MIN_MOVETIME_MS: u64 = 50;
 const MAX_MOVETIME_MS: u64 = 60_000;
+/// Extra margin over Move Overhead required for a bot/live movetime (P7-05).
+///
+/// Keeps the hard budget (`movetime − overhead`) safely above zero so a live
+/// game (Lichess / TUI bot) never searches with a ~0 ms hard limit.
+const MIN_MOVETIME_MARGIN_MS: u64 = 50;
 const MIN_HASH_MB: u32 = 1;
 const MAX_HASH_MB: u32 = 65_536;
 const MIN_THREADS: u32 = 1;
@@ -101,9 +106,12 @@ impl SideStrength {
         }
     }
 
-    fn clamp(&mut self) {
+    fn clamp_with_floor(&mut self, floor_ms: u64) {
         self.depth = self.depth.clamp(MIN_DEPTH, MAX_DEPTH);
-        self.movetime_ms = self.movetime_ms.clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
+        self.movetime_ms = self
+            .movetime_ms
+            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS)
+            .max(floor_ms);
     }
 
     fn adjust_depth(&mut self, delta: i32) {
@@ -111,9 +119,10 @@ impl SideStrength {
         self.depth = next as u32;
     }
 
-    fn adjust_movetime(&mut self, delta_ms: i64) {
+    fn adjust_movetime(&mut self, delta_ms: i64, floor_ms: u64) {
+        let floor = floor_ms.max(MIN_MOVETIME_MS);
         let next = (self.movetime_ms as i64 + delta_ms)
-            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+            .clamp(floor as i64, MAX_MOVETIME_MS as i64);
         self.movetime_ms = next as u64;
     }
 }
@@ -258,6 +267,13 @@ impl Default for EngineConfig {
     }
 }
 
+/// Safe lower bound for a live/bot movetime given a Move Overhead (P7-05).
+///
+/// Ensures `movetime ≥ overhead + margin` so the hard budget stays positive.
+pub fn movetime_floor_ms(move_overhead_ms: u64) -> u64 {
+    (move_overhead_ms + MIN_MOVETIME_MARGIN_MS).max(MIN_MOVETIME_MS)
+}
+
 impl Config {
     /// Resolved config file path (`$XDG_CONFIG_HOME/openchess/config.json` or `~/.config/...`).
     pub fn path() -> PathBuf {
@@ -351,10 +367,17 @@ impl Config {
     }
 
     pub fn clamp(&mut self) {
+        // Clamp overhead first so the movetime floor is computed from a sane value.
+        self.engine.move_overhead_ms = self.engine.move_overhead_ms.clamp(0, MAX_MOVETIME_MS);
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
         self.bot.depth = self.bot.depth.clamp(MIN_DEPTH, MAX_DEPTH);
-        self.bot.movetime_ms = self.bot.movetime_ms.clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
-        self.bot.white.clamp();
-        self.bot.black.clamp();
+        self.bot.movetime_ms = self
+            .bot
+            .movetime_ms
+            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS)
+            .max(floor);
+        self.bot.white.clamp_with_floor(floor);
+        self.bot.black.clamp_with_floor(floor);
         self.eval.depth = self.eval.depth.clamp(MIN_DEPTH, MAX_DEPTH);
         self.eval.movetime_ms = self
             .eval
@@ -367,10 +390,6 @@ impl Config {
             .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
         self.engine.hash_mb = self.engine.hash_mb.clamp(MIN_HASH_MB, MAX_HASH_MB);
         self.engine.threads = self.engine.threads.clamp(MIN_THREADS, MAX_THREADS);
-        self.engine.move_overhead_ms = self
-            .engine
-            .move_overhead_ms
-            .clamp(0, MAX_MOVETIME_MS);
         self.engine.elo = self.engine.elo.clamp(MIN_ELO, MAX_ELO);
     }
 
@@ -380,8 +399,9 @@ impl Config {
     }
 
     pub fn adjust_movetime(&mut self, delta_ms: i64) {
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
         let next = (self.bot.movetime_ms as i64 + delta_ms)
-            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+            .clamp(floor as i64, MAX_MOVETIME_MS as i64);
         self.bot.movetime_ms = next as u64;
     }
 
@@ -390,7 +410,8 @@ impl Config {
     }
 
     pub fn adjust_white_movetime(&mut self, delta_ms: i64) {
-        self.bot.white.adjust_movetime(delta_ms);
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
+        self.bot.white.adjust_movetime(delta_ms, floor);
     }
 
     pub fn adjust_black_depth(&mut self, delta: i32) {
@@ -398,7 +419,8 @@ impl Config {
     }
 
     pub fn adjust_black_movetime(&mut self, delta_ms: i64) {
-        self.bot.black.adjust_movetime(delta_ms);
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
+        self.bot.black.adjust_movetime(delta_ms, floor);
     }
 
     pub fn adjust_eval_depth(&mut self, delta: i32) {
@@ -546,15 +568,63 @@ mod tests {
         cfg.analysis.movetime_ms = 1;
         cfg.engine.elo = 50;
         cfg.clamp();
+        let floor = movetime_floor_ms(cfg.engine.move_overhead_ms);
         assert_eq!(cfg.bot.depth, MIN_DEPTH);
-        assert_eq!(cfg.bot.movetime_ms, MIN_MOVETIME_MS);
+        // Bot / live movetimes clamp up to the overhead-aware floor (P7-05).
+        assert_eq!(cfg.bot.movetime_ms, floor);
         assert_eq!(cfg.bot.white.depth, MIN_DEPTH);
-        assert_eq!(cfg.bot.black.movetime_ms, MIN_MOVETIME_MS);
+        assert_eq!(cfg.bot.black.movetime_ms, floor);
+        // Eval / analysis use the plain minimum (not clock-critical).
         assert_eq!(cfg.eval.depth, MIN_DEPTH);
         assert_eq!(cfg.eval.movetime_ms, MIN_MOVETIME_MS);
         assert_eq!(cfg.analysis.depth, MIN_DEPTH);
         assert_eq!(cfg.analysis.movetime_ms, MIN_MOVETIME_MS);
         assert_eq!(cfg.engine.elo, MIN_ELO);
+    }
+
+    #[test]
+    fn movetime_floor_keeps_hard_budget_positive() {
+        // P7-05: with the default 50 ms overhead, a 50 ms bot movetime would
+        // leave a 0 ms hard budget. The floor must lift it clear of overhead.
+        let mut cfg = Config::default();
+        cfg.engine.move_overhead_ms = 50;
+        cfg.bot.movetime_ms = 50;
+        cfg.bot.white.movetime_ms = 50;
+        cfg.bot.black.movetime_ms = 50;
+        cfg.clamp();
+        let floor = movetime_floor_ms(50);
+        assert!(floor > 50, "floor must exceed overhead");
+        assert_eq!(cfg.bot.movetime_ms, floor);
+        assert_eq!(cfg.bot.white.movetime_ms, floor);
+        assert_eq!(cfg.bot.black.movetime_ms, floor);
+        // Hard budget = movetime − overhead is strictly positive.
+        assert!(cfg.bot.movetime_ms - cfg.engine.move_overhead_ms > 0);
+    }
+
+    #[test]
+    fn movetime_floor_scales_with_overhead() {
+        let mut cfg = Config::default();
+        cfg.engine.move_overhead_ms = 300;
+        cfg.bot.movetime_ms = 100;
+        cfg.clamp();
+        assert_eq!(cfg.bot.movetime_ms, movetime_floor_ms(300));
+        assert!(cfg.bot.movetime_ms > cfg.engine.move_overhead_ms);
+    }
+
+    #[test]
+    fn adjust_movetime_respects_overhead_floor() {
+        let mut cfg = Config::default();
+        cfg.engine.move_overhead_ms = 50;
+        cfg.bot.movetime_ms = movetime_floor_ms(50);
+        cfg.bot.white.movetime_ms = movetime_floor_ms(50);
+        cfg.bot.black.movetime_ms = movetime_floor_ms(50);
+        cfg.adjust_movetime(-10_000);
+        cfg.adjust_white_movetime(-10_000);
+        cfg.adjust_black_movetime(-10_000);
+        let floor = movetime_floor_ms(50);
+        assert_eq!(cfg.bot.movetime_ms, floor);
+        assert_eq!(cfg.bot.white.movetime_ms, floor);
+        assert_eq!(cfg.bot.black.movetime_ms, floor);
     }
 
     #[test]
