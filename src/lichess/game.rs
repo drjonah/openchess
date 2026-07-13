@@ -151,6 +151,9 @@ pub struct GameDriver {
     my_id: String,
     my_color: Option<Color>,
     initial_fen: String,
+    /// Last `moves` string we already searched/posted for, to avoid duplicate
+    /// POSTs when Lichess re-sends the same state (reconnect / replay).
+    last_acted_moves: Option<String>,
     options: PlayOptions,
     tt: TranspositionTable,
 }
@@ -161,6 +164,7 @@ impl GameDriver {
             my_id: my_id.into(),
             my_color: None,
             initial_fen: startpos_literal(),
+            last_acted_moves: None,
             options,
             tt: TranspositionTable::new(options.hash_mb.max(1) as usize),
         }
@@ -185,6 +189,10 @@ impl GameDriver {
         if state.is_over() {
             return Ok(GameAction::Finished);
         }
+        // Same ply already handled (e.g. stream reconnect replaying gameFull).
+        if self.last_acted_moves.as_deref() == Some(state.moves.as_str()) {
+            return Ok(GameAction::Wait);
+        }
         let board = self.rebuild_board(&state.moves)?;
         let Some(my_color) = self.my_color else {
             return Ok(GameAction::Wait);
@@ -193,7 +201,10 @@ impl GameDriver {
             return Ok(GameAction::Wait);
         }
         match self.pick_move(&board, state) {
-            Some(mv) => Ok(GameAction::PlayMove(mv)),
+            Some(mv) => {
+                self.last_acted_moves = Some(state.moves.clone());
+                Ok(GameAction::PlayMove(mv))
+            }
             None => Ok(GameAction::Wait),
         }
     }
@@ -266,41 +277,104 @@ fn resolve_color(my_id: &str, full: &GameFull) -> Option<Color> {
 /// Play one game to completion over a live stream.
 ///
 /// Reads the per-game NDJSON stream, drives [`GameDriver`], and POSTs moves. On
-/// a move-POST failure it resigns rather than risk flagging (per §11.4).
+/// a move-POST failure it resigns rather than risk flagging (per §11.4). If the
+/// game stream drops before a terminal status, re-opens it with backoff
+/// (LICHESS §11.4) so position rebuild from the full move list can resume.
 pub fn play_game(
     client: &Client,
     game_id: &str,
     my_id: &str,
     options: PlayOptions,
 ) -> Result<(), LichessError> {
-    let mut stream = client
-        .open_ndjson_stream::<GameStreamEvent>(&format!("/api/bot/game/stream/{game_id}"))?;
     let mut driver = GameDriver::new(my_id, options);
+    let mut attempt: u32 = 0;
+    let mut empty_reconnects: u32 = 0;
 
     loop {
-        let Some(item) = stream.read_item()? else {
-            // Stream closed; caller decides whether to reconnect.
-            return Ok(());
+        let mut stream = match client
+            .open_ndjson_stream::<GameStreamEvent>(&format!("/api/bot/game/stream/{game_id}"))
+        {
+            Ok(s) => {
+                attempt = 0;
+                s
+            }
+            Err(LichessError::RateLimited) => {
+                eprintln!("lichess game {game_id}: rate limited on connect; sleeping 60s");
+                std::thread::sleep(super::pgn::RATE_LIMIT_SLEEP);
+                continue;
+            }
+            Err(e) => {
+                let delay = super::pgn::backoff_delay(attempt);
+                attempt = attempt.saturating_add(1);
+                eprintln!("lichess game {game_id}: connect failed: {e}; retry in {delay:?}");
+                std::thread::sleep(delay);
+                continue;
+            }
         };
-        let action = match item {
-            NdjsonItem::Keepalive => continue,
-            NdjsonItem::Event(GameStreamEvent::GameFull(full)) => driver.on_game_full(&full)?,
-            NdjsonItem::Event(GameStreamEvent::GameState(state)) => driver.on_game_state(&state)?,
-            NdjsonItem::Event(GameStreamEvent::ChatLine(_))
-            | NdjsonItem::Event(GameStreamEvent::OpponentGone(_)) => GameAction::Wait,
-        };
-        match action {
-            GameAction::Wait => {}
-            GameAction::Finished => return Ok(()),
-            GameAction::PlayMove(mv) => {
-                let uci = mv.to_string();
-                if let Err(e) = client.play_move(game_id, &uci) {
-                    eprintln!("lichess game {game_id}: move {uci} failed: {e}; resigning");
-                    let _ = client.resign(game_id);
-                    return Err(e);
+
+        let mut saw_event = false;
+        let mut stream_alive = true;
+        while stream_alive {
+            let item = match stream.read_item() {
+                Ok(Some(item)) => item,
+                Ok(None) => {
+                    // Unexpected EOF before terminal status — reconnect.
+                    stream_alive = false;
+                    continue;
+                }
+                Err(LichessError::RateLimited) => {
+                    eprintln!("lichess game {game_id}: rate limited; sleeping 60s");
+                    std::thread::sleep(super::pgn::RATE_LIMIT_SLEEP);
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("lichess game {game_id}: stream error: {e}; reconnecting");
+                    stream_alive = false;
+                    continue;
+                }
+            };
+            let action = match item {
+                NdjsonItem::Keepalive => continue,
+                NdjsonItem::Event(GameStreamEvent::GameFull(full)) => {
+                    saw_event = true;
+                    driver.on_game_full(&full)?
+                }
+                NdjsonItem::Event(GameStreamEvent::GameState(state)) => {
+                    saw_event = true;
+                    driver.on_game_state(&state)?
+                }
+                NdjsonItem::Event(GameStreamEvent::ChatLine(_))
+                | NdjsonItem::Event(GameStreamEvent::OpponentGone(_)) => GameAction::Wait,
+            };
+            match action {
+                GameAction::Wait => {}
+                GameAction::Finished => return Ok(()),
+                GameAction::PlayMove(mv) => {
+                    let uci = mv.to_string();
+                    if let Err(e) = client.play_move(game_id, &uci) {
+                        eprintln!("lichess game {game_id}: move {uci} failed: {e}; resigning");
+                        let _ = client.resign(game_id);
+                        return Err(e);
+                    }
                 }
             }
         }
+
+        if saw_event {
+            empty_reconnects = 0;
+        } else {
+            empty_reconnects = empty_reconnects.saturating_add(1);
+            if empty_reconnects >= 5 {
+                return Err(LichessError::Http(format!(
+                    "game {game_id} stream closed before terminal status"
+                )));
+            }
+        }
+
+        let delay = super::pgn::backoff_delay(attempt);
+        attempt = attempt.saturating_add(1);
+        eprintln!("lichess game {game_id}: stream closed; reconnecting in {delay:?}");
+        std::thread::sleep(delay);
     }
 }
 
@@ -431,6 +505,42 @@ mod tests {
         assert_eq!(limits.winc, Some(Duration::from_millis(2_000)));
         assert_eq!(limits.binc, Some(Duration::from_millis(1_000)));
         assert!(limits.movetime.is_none());
+    }
+
+    #[test]
+    fn skips_duplicate_state_after_playing() {
+        init();
+        let mut driver = GameDriver::new("openchessbot", fast_options());
+        let full = full("openchessbot", "opp", "");
+        let first = driver.on_game_full(&full).unwrap();
+        assert!(matches!(first, GameAction::PlayMove(_)));
+        // Replayed gameFull / same gameState must not search+POST again.
+        assert_eq!(driver.on_game_state(&full.state).unwrap(), GameAction::Wait);
+        assert_eq!(driver.on_game_full(&full).unwrap(), GameAction::Wait);
+    }
+
+    #[test]
+    fn plays_again_after_opponent_moves() {
+        init();
+        let mut driver = GameDriver::new("openchessbot", fast_options());
+        let action = driver.on_game_full(&full("openchessbot", "opp", "")).unwrap();
+        assert!(matches!(action, GameAction::PlayMove(_)));
+        // After opponent replies, moves string changes → our turn again.
+        let reply = GameState {
+            moves: "e2e4 e7e5".into(),
+            status: "started".into(),
+            ..Default::default()
+        };
+        // Wait — after e2e4 e7e5 it is White's turn again, so we should move.
+        match driver.on_game_state(&reply).unwrap() {
+            GameAction::PlayMove(mv) => {
+                let mut board = Board::startpos();
+                board.make(board.parse_uci_move("e2e4").unwrap());
+                board.make(board.parse_uci_move("e7e5").unwrap());
+                assert!(board.legal_moves().contains(&mv));
+            }
+            other => panic!("expected a second White move, got {other:?}"),
+        }
     }
 
     #[test]

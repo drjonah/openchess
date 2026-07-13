@@ -1,6 +1,7 @@
 //! Lichess Bot API client (feature = `"lichess"`).
 //!
-//! Headless daemon: NDJSON event stream + REST helpers. Game play lands in P9-03.
+//! Headless daemon: NDJSON event/game streams, challenge filter, and in-process
+//! search-driven play (`openchess lichess …`).
 
 pub mod challenge;
 pub mod client;

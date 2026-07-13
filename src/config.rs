@@ -119,9 +119,10 @@ impl SideStrength {
         self.depth = next as u32;
     }
 
-    fn adjust_movetime(&mut self, delta_ms: i64) {
+    fn adjust_movetime(&mut self, delta_ms: i64, floor_ms: u64) {
+        let floor = floor_ms.max(MIN_MOVETIME_MS);
         let next = (self.movetime_ms as i64 + delta_ms)
-            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+            .clamp(floor as i64, MAX_MOVETIME_MS as i64);
         self.movetime_ms = next as u64;
     }
 }
@@ -398,8 +399,9 @@ impl Config {
     }
 
     pub fn adjust_movetime(&mut self, delta_ms: i64) {
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
         let next = (self.bot.movetime_ms as i64 + delta_ms)
-            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
+            .clamp(floor as i64, MAX_MOVETIME_MS as i64);
         self.bot.movetime_ms = next as u64;
     }
 
@@ -408,7 +410,8 @@ impl Config {
     }
 
     pub fn adjust_white_movetime(&mut self, delta_ms: i64) {
-        self.bot.white.adjust_movetime(delta_ms);
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
+        self.bot.white.adjust_movetime(delta_ms, floor);
     }
 
     pub fn adjust_black_depth(&mut self, delta: i32) {
@@ -416,7 +419,8 @@ impl Config {
     }
 
     pub fn adjust_black_movetime(&mut self, delta_ms: i64) {
-        self.bot.black.adjust_movetime(delta_ms);
+        let floor = movetime_floor_ms(self.engine.move_overhead_ms);
+        self.bot.black.adjust_movetime(delta_ms, floor);
     }
 
     pub fn adjust_eval_depth(&mut self, delta: i32) {
@@ -605,6 +609,22 @@ mod tests {
         cfg.clamp();
         assert_eq!(cfg.bot.movetime_ms, movetime_floor_ms(300));
         assert!(cfg.bot.movetime_ms > cfg.engine.move_overhead_ms);
+    }
+
+    #[test]
+    fn adjust_movetime_respects_overhead_floor() {
+        let mut cfg = Config::default();
+        cfg.engine.move_overhead_ms = 50;
+        cfg.bot.movetime_ms = movetime_floor_ms(50);
+        cfg.bot.white.movetime_ms = movetime_floor_ms(50);
+        cfg.bot.black.movetime_ms = movetime_floor_ms(50);
+        cfg.adjust_movetime(-10_000);
+        cfg.adjust_white_movetime(-10_000);
+        cfg.adjust_black_movetime(-10_000);
+        let floor = movetime_floor_ms(50);
+        assert_eq!(cfg.bot.movetime_ms, floor);
+        assert_eq!(cfg.bot.white.movetime_ms, floor);
+        assert_eq!(cfg.bot.black.movetime_ms, floor);
     }
 
     #[test]

@@ -103,6 +103,7 @@ mod tests {
                 key: variant.into(),
             },
             challenger: Challenger {
+                id: None,
                 name: "someone".into(),
                 title: None,
                 rating: Some(1500),

@@ -168,11 +168,18 @@ fn run_event_loop(args: &[String]) -> Result<(), LichessError> {
         accept_rated: opts.accept_rated,
         ..Default::default()
     };
-    let play_options = PlayOptions {
+    let mut play_options = PlayOptions {
         hash_mb: opts.hash_mb.max(1),
         fixed_movetime: opts.movetime_ms.map(Duration::from_millis),
         ..Default::default()
     };
+    // P7-05: keep a positive hard budget (movetime − overhead) on the bot path.
+    if let Some(mt) = play_options.fixed_movetime {
+        let floor = Duration::from_millis(crate::config::movetime_floor_ms(
+            play_options.move_overhead.as_millis() as u64,
+        ));
+        play_options.fixed_movetime = Some(mt.max(floor));
+    }
 
     // Our own account id is needed to determine our color and to ignore our
     // own outbound challenges.
@@ -255,7 +262,7 @@ fn handle_event(
     match event {
         StreamEvent::Challenge { challenge } => {
             let replay = !seen_challenges.insert(challenge.id.clone());
-            let from_us = challenge.challenger.name.eq_ignore_ascii_case(my_id);
+            let from_us = challenge.challenger.is_us(my_id);
             eprintln!(
                 "lichess event challenge {} id={} speed={} rated={} challenger={} variant={}",
                 if replay { "replay" } else { "new" },
@@ -265,7 +272,9 @@ fn handle_event(
                 challenge.challenger.name,
                 challenge.variant.key,
             );
-            if play && !from_us {
+            // P9-07 / LICHESS §6: stream reconnects replay open challenges — do
+            // not accept/decline twice for the same id.
+            if play && !from_us && !replay {
                 match challenge::handle_incoming(client, config, challenge) {
                     Ok(true) => eprintln!("lichess: accepted challenge {}", challenge.id),
                     Ok(false) => eprintln!("lichess: declined challenge {}", challenge.id),
@@ -284,15 +293,23 @@ fn handle_event(
                 game.rated,
                 game.opponent.username,
             );
+            // Replayed gameStart means an in-flight game after reconnect; play
+            // again so the per-game stream can resume (LICHESS §11.4).
             if play {
                 eprintln!("lichess: playing game {}", game.game_id);
                 match game::play_game(client, &game.game_id, my_id, *play_options) {
-                    Ok(()) => eprintln!("lichess: game {} finished", game.game_id),
-                    Err(e) => eprintln!("lichess: game {} error: {e}", game.game_id),
-                }
-                match pgn::export_game(client, &game.game_id) {
-                    Ok(path) => eprintln!("lichess: saved PGN {}", path.display()),
-                    Err(e) => eprintln!("lichess: PGN export failed: {e}"),
+                    Ok(()) => {
+                        eprintln!("lichess: game {} finished", game.game_id);
+                        match pgn::export_game(client, &game.game_id) {
+                            Ok(path) => eprintln!("lichess: saved PGN {}", path.display()),
+                            Err(e) => eprintln!("lichess: PGN export failed: {e}"),
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("lichess: game {} error: {e}", game.game_id);
+                        // Allow a later event-stream replay to resume this game.
+                        seen_game_starts.remove(&game.game_id);
+                    }
                 }
             }
         }
@@ -438,6 +455,18 @@ mod tests {
         assert_eq!(opts.movetime_ms, Some(500));
         assert_eq!(opts.hash_mb, 32);
         assert!(opts.accept_rated);
+    }
+
+    #[test]
+    fn fixed_movetime_is_clamped_to_overhead_floor() {
+        // Mirrors the P7-05 clamp applied in run_event_loop when --movetime is set.
+        let overhead = crate::time::DEFAULT_MOVE_OVERHEAD;
+        let floor = Duration::from_millis(crate::config::movetime_floor_ms(
+            overhead.as_millis() as u64,
+        ));
+        let too_small = Duration::from_millis(50);
+        assert!(too_small < floor);
+        assert_eq!(too_small.max(floor), floor);
     }
 
     #[test]
