@@ -35,6 +35,23 @@ pub struct Limits {
     pub threads: u32,
     /// NNUE network for this search (defaults to embedded bootstrap).
     pub network: Option<std::sync::Arc<crate::eval::Network>>,
+    /// Opening-phase search floor (P10-04): when set, defer the hard time abort
+    /// until at least this depth completes (bounded by an absolute safety cap).
+    /// `None` disables the floor.
+    pub min_opening_depth: Option<i32>,
+}
+
+/// Default opening-phase minimum depth for the search floor (P10-04).
+pub const MIN_OPENING_DEPTH: i32 = 4;
+
+/// Root game-ply threshold below which the opening search floor may apply.
+pub const OPENING_PHASE_PLIES: u32 = 16;
+
+/// Absolute ceiling on the opening-floor time extension: never spend more than
+/// this multiple of the hard bound (and at least 2s) chasing the floor, so a
+/// single opening move can never stall the whole game.
+fn opening_hard_cap(hard: Duration) -> Duration {
+    hard.saturating_mul(30).max(Duration::from_secs(2))
 }
 
 impl Default for Limits {
@@ -52,6 +69,7 @@ impl Default for Limits {
             move_overhead: DEFAULT_MOVE_OVERHEAD,
             threads: 1,
             network: None,
+            min_opening_depth: None,
         }
     }
 }
@@ -86,6 +104,13 @@ pub struct ThreadData {
     pub start: Instant,
     /// Hard elapsed-time abort bound, if any.
     pub hard_limit: Option<Duration>,
+    /// Opening-floor minimum depth (0 = disabled). While the last completed
+    /// depth is below this, the hard abort is deferred (P10-04).
+    pub opening_floor_depth: i32,
+    /// Last fully completed ID depth (for the opening floor).
+    pub completed_depth: i32,
+    /// Absolute ceiling for the opening-floor extension (safety net).
+    pub opening_hard_cap: Option<Duration>,
     /// Debug counters for singular / negative extensions (P5-06).
     pub singular_extensions: u64,
     pub negative_extensions: u64,
@@ -102,10 +127,37 @@ impl ThreadData {
             nnue: NnueState::new(network),
             start: Instant::now(),
             hard_limit: None,
+            opening_floor_depth: 0,
+            completed_depth: 0,
+            opening_hard_cap: None,
             singular_extensions: 0,
             negative_extensions: 0,
             multi_cuts: 0,
         }
+    }
+}
+
+impl ThreadData {
+    /// Whether the hard time bound should abort now, honoring the opening floor.
+    ///
+    /// Past the hard bound we still defer while the last completed depth is below
+    /// `opening_floor_depth`, but never beyond the absolute `opening_hard_cap`.
+    pub fn hard_abort_now(&self, elapsed: Duration) -> bool {
+        let Some(hard) = self.hard_limit else {
+            return false;
+        };
+        if elapsed < hard {
+            return false;
+        }
+        if self.opening_floor_depth > 0 && self.completed_depth < self.opening_floor_depth {
+            return self.opening_hard_cap.is_some_and(|cap| elapsed >= cap);
+        }
+        true
+    }
+
+    /// True while the opening floor is still deferring time stops.
+    fn below_opening_floor(&self) -> bool {
+        self.opening_floor_depth > 0 && self.completed_depth < self.opening_floor_depth
     }
 }
 
@@ -189,6 +241,8 @@ pub fn go_single(
     let budget = TimeBudget::from_limits(&limits, board.side_to_move(), limits.move_overhead);
     td.start = start;
     td.hard_limit = budget.map(|b| b.hard);
+    td.opening_floor_depth = limits.min_opening_depth.unwrap_or(0).max(0);
+    td.opening_hard_cap = budget.map(|b| opening_hard_cap(b.hard));
     td.nnue.refresh(&board);
 
     if board.is_draw(0) {
@@ -220,13 +274,18 @@ pub fn go_single(
 
     td.root_moves = legal.into_iter().map(RootMove::new).collect();
 
+    // Fallback if the search aborts before completing a single depth: never emit
+    // movegen order (which starts with the a-file pawn push). Prefer the TT move,
+    // then a development heuristic (P2-07 / openings.md §1.3, §3 Option C).
+    let fallback = fallback_root_move(&board, &td, tt);
+
     let max_depth = limits.depth.unwrap_or(64).clamp(1, (MAX_PLY as i32) - 1);
     let mut best = SearchResult {
-        best_move: td.root_moves[0].mv,
+        best_move: fallback,
         score: 0,
         depth: 0,
         nodes: 0,
-        pv: vec![td.root_moves[0].mv],
+        pv: vec![fallback],
         time: Duration::ZERO,
     };
 
@@ -239,15 +298,18 @@ pub fn go_single(
         }
         if let Some(b) = budget {
             let elapsed = start.elapsed();
-            if b.hard_exceeded(elapsed) {
+            if td.hard_abort_now(elapsed) {
                 stop.store(true, Ordering::Relaxed);
                 break;
             }
-            if b.soft_exceeded_scaled(
-                elapsed,
-                stability.best_move_changes,
-                stability.score_drop,
-            ) {
+            // Below the opening floor, keep deepening (do not soft-stop yet).
+            if !td.below_opening_floor()
+                && b.soft_exceeded_scaled(
+                    elapsed,
+                    stability.best_move_changes,
+                    stability.score_drop,
+                )
+            {
                 break;
             }
         }
@@ -309,7 +371,7 @@ pub fn go_single(
         let pv = if !td.stack[0].pv.is_empty() {
             td.stack[0].pv.clone()
         } else {
-            vec![td.root_moves[0].mv]
+            vec![fallback]
         };
         let best_move = pv[0];
 
@@ -321,6 +383,7 @@ pub fn go_single(
             pv: pv.clone(),
             time: start.elapsed(),
         };
+        td.completed_depth = depth;
 
         stability.observe(best_move, score);
 
@@ -337,11 +400,13 @@ pub fn go_single(
         }
 
         if let Some(b) = budget {
-            if b.soft_exceeded_scaled(
-                start.elapsed(),
-                stability.best_move_changes,
-                stability.score_drop,
-            ) {
+            if !td.below_opening_floor()
+                && b.soft_exceeded_scaled(
+                    start.elapsed(),
+                    stability.best_move_changes,
+                    stability.score_drop,
+                )
+            {
                 break;
             }
         }
@@ -350,6 +415,65 @@ pub fn go_single(
     best.nodes = td.nodes;
     best.time = start.elapsed();
     best
+}
+
+/// Pick a sensible root move for when the search aborts before completing depth 1.
+///
+/// Priority (P2-07): a legal transposition-table move for this position, then the
+/// legal root move with the highest [`development_score`]. Never returns move
+/// generation order, which would surface corner-pawn pushes (`a2a3` / `a7a6`).
+fn fallback_root_move(board: &Board, td: &ThreadData, tt: &TranspositionTable) -> Move {
+    debug_assert!(!td.root_moves.is_empty());
+
+    if let Some(entry) = tt.probe(board.key()) {
+        if !entry.mv.is_none() && td.root_moves.iter().any(|rm| rm.mv == entry.mv) {
+            return entry.mv;
+        }
+    }
+
+    td.root_moves
+        .iter()
+        .map(|rm| rm.mv)
+        .max_by_key(|&mv| development_score(board, mv))
+        .unwrap_or(td.root_moves[0].mv)
+}
+
+/// Static opening-development preference used only for the abort fallback.
+///
+/// Rewards central pawn advances and minor-piece development while penalising
+/// rook/knight-file pawn pushes and premature king/queen/rook moves. This is a
+/// tie-break heuristic, not an evaluation term — real move choice comes from search.
+fn development_score(board: &Board, mv: Move) -> i32 {
+    use crate::types::PieceType;
+
+    let file = mv.to().file();
+    let central = matches!(file, 3 | 4); // d, e
+    let semi_central = matches!(file, 2 | 5); // c, f
+
+    match board.piece_on(mv.from()).piece_type() {
+        Some(PieceType::Knight) | Some(PieceType::Bishop) => {
+            50 + if central || semi_central { 10 } else { 0 }
+        }
+        Some(PieceType::Pawn) => {
+            if central {
+                40
+            } else if semi_central {
+                15
+            } else {
+                -30 // a/b/g/h pawn pushes (includes the a2a3 offender)
+            }
+        }
+        Some(PieceType::Queen) => -10,
+        Some(PieceType::Rook) => -20,
+        Some(PieceType::King) => {
+            if mv.is_castling() {
+                30
+            } else {
+                -40
+            }
+        }
+        None => 0,
+    }
 }
 
 /// Convenience: search with a fresh 1 MB TT and no external stop.
@@ -445,6 +569,123 @@ mod tests {
     }
 
     #[test]
+    fn zero_depth_abort_avoids_corner_pawn() {
+        init();
+        // Fresh (empty) TT and an already-set stop flag: the search cannot
+        // complete depth 1, so it must use the development fallback (P2-07).
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(1);
+        let stop = AtomicBool::new(true);
+        let result = go(
+            &mut board,
+            Limits {
+                depth: Some(20),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        assert!(!result.best_move.is_none());
+        assert!(board.legal_moves().contains(&result.best_move));
+        assert_eq!(result.depth, 0, "no full depth should complete");
+        let uci = result.best_move.to_string();
+        assert!(
+            !matches!(
+                uci.as_str(),
+                "a2a3" | "a2a4" | "h2h3" | "h2h4" | "b2b3" | "b2b4" | "g2g3" | "g2g4"
+            ),
+            "abort fallback returned a flank pawn push: {uci}"
+        );
+    }
+
+    #[test]
+    fn abort_fallback_prefers_tt_move() {
+        init();
+        // Warm the TT with a real search, then abort immediately: the fallback
+        // should return the TT move for the root position.
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(8);
+        let stop = AtomicBool::new(false);
+        let warm = go(
+            &mut board,
+            Limits {
+                depth: Some(6),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        let tt_move = tt.probe(board.key()).map(|e| e.mv);
+        stop.store(true, Ordering::Relaxed);
+        let aborted = go(
+            &mut board,
+            Limits {
+                depth: Some(20),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        assert!(board.legal_moves().contains(&aborted.best_move));
+        if let Some(mv) = tt_move.filter(|m| !m.is_none()) {
+            assert_eq!(aborted.best_move, mv, "expected TT move on zero-depth abort");
+        }
+        let _ = warm;
+    }
+
+    #[test]
+    fn opening_floor_reaches_min_depth_under_short_movetime() {
+        init();
+        // 100ms movetime would normally stop shallow, but the opening floor
+        // defers the hard abort until depth >= MIN_OPENING_DEPTH (P10-04).
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(16);
+        let stop = AtomicBool::new(false);
+        let result = go(
+            &mut board,
+            Limits {
+                movetime: Some(Duration::from_millis(100)),
+                min_opening_depth: Some(MIN_OPENING_DEPTH),
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        assert!(
+            result.depth >= MIN_OPENING_DEPTH,
+            "opening floor should reach depth {MIN_OPENING_DEPTH}, got {}",
+            result.depth
+        );
+        assert!(board.legal_moves().contains(&result.best_move));
+    }
+
+    #[test]
+    fn opening_floor_off_may_stop_shallow() {
+        init();
+        // Sanity: without the floor, a tiny movetime is allowed to stop shallow.
+        let mut board = Board::startpos();
+        let tt = TranspositionTable::new(16);
+        let stop = AtomicBool::new(false);
+        let result = go(
+            &mut board,
+            Limits {
+                movetime: Some(Duration::from_millis(100)),
+                min_opening_depth: None,
+                ..Default::default()
+            },
+            &tt,
+            &stop,
+            None,
+        );
+        // Must still return a legal move; depth may be small.
+        assert!(board.legal_moves().contains(&result.best_move));
+    }
+
+    #[test]
     fn hanging_queen_not_quiet_win() {
         init();
         // Black queen hanging on d5; White queen on d1 can take it (same file).
@@ -483,6 +724,7 @@ mod tests {
     #[test]
     fn nmp_reduces_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _guard = selectivity::NMP_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
 
@@ -527,6 +769,7 @@ mod tests {
     #[test]
     fn lmr_reduces_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _guard = selectivity::LMR_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
 
@@ -571,6 +814,7 @@ mod tests {
     #[test]
     fn rfp_razoring_reduce_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _rfp = selectivity::RFP_TEST_LOCK.lock().unwrap();
         let _razor = selectivity::RAZORING_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
@@ -618,6 +862,7 @@ mod tests {
     #[test]
     fn move_loop_pruning_reduces_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _lmp = selectivity::LMP_TEST_LOCK.lock().unwrap();
         let _fut = selectivity::FUTILITY_TEST_LOCK.lock().unwrap();
         let _hist = selectivity::HISTORY_PRUNE_TEST_LOCK.lock().unwrap();
@@ -671,6 +916,7 @@ mod tests {
     #[test]
     fn probcut_iir_reduce_nodes_at_fixed_depth() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _pc = selectivity::PROBCUT_TEST_LOCK.lock().unwrap();
         let _iir = selectivity::IIR_TEST_LOCK.lock().unwrap();
         let stop = AtomicBool::new(false);
@@ -718,6 +964,7 @@ mod tests {
     #[test]
     fn singular_extensions_visible_in_deep_search() {
         init();
+        let _ab = selectivity::ab_test_guard();
         let _guard = selectivity::SINGULAR_TEST_LOCK.lock().unwrap();
         selectivity::SINGULAR_ENABLED.store(true, Ordering::Relaxed);
         // Tactical midgame: deeper NonPV nodes with TT moves from prior ID iters.

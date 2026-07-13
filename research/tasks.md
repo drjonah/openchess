@@ -261,13 +261,13 @@ flowchart TB
   - **Acceptance:** Bench node counts drop vs plain αβ at fixed depth without illegal moves; PV preserved  
   - **Research:** reckless §6.2 · stockfish §9.2 · chesswiki PVS
 
-- [ ] **P2-07** — Root bestmove when zero ID depths complete  
+- [x] **P2-07** — Root bestmove when zero ID depths complete  
   - **Deps:** P2-02, P3-03  
   - **Parallel-ok:** P10-01  
   - **Deliverable:** Do not emit `root_moves[0]` as final `bestmove` unless ≥1 full depth iteration finished; on abort use TT move, best history quiet, or development heuristic — not movegen order  
   - **Acceptance:** `go movetime 50` from startpos never returns `a2a3`/`a7a6`; `go movetime 100` still legal; prior completed depth still wins when abort mid-ID  
   - **Research:** [openings.md §1.3–§3 Option C](./openings.md#13-time-abort-fallback--corner-pawns) · chesswiki Time management  
-  - **Note:** Today `search/mod.rs` initializes `best_move` from `root_moves[0]`; pawn gen order is a-file first.
+  - **Note:** `search::fallback_root_move` seeds `best` from the TT move else the highest `development_score` legal move; used for both the initial `best` and the empty-PV path. Tested via `zero_depth_abort_avoids_corner_pawn` / `abort_fallback_prefers_tt_move`.
 
 ---
 
@@ -519,15 +519,15 @@ flowchart TB
   - **Parallel-ok:** P2-07, P10-01  
   - **Deliverable:** Config + UCI validation: `movetime_ms ≥ move_overhead_ms + margin` (e.g. 100 ms); reject or clamp sub-minimum bot/TUI limits  
   - **Acceptance:** Setting `bot.movetime_ms = 50` clamps to safe floor; hard budget never 0 ms with default overhead  
-  - **Research:** [openings.md §1.3](./openings.md#13-time-abort-fallback--corner-pawns) · `src/config.rs` `MIN_MOVETIME_MS`  
-  - **Note:** `config::movetime_floor_ms(overhead)` = `overhead + 50`; applied to `bot.*` movetimes in `Config::clamp` (eval/analysis keep the plain minimum).
+  - **Note:** `config::movetime_floor_ms(overhead)` = `overhead + 50ms` (≥50); `Config::clamp` floors `bot.*` movetimes. Combined with P2-07 + P10 book the abort fallback is safe. Eval/analysis keep the plain `MIN_MOVETIME_MS`.
 
-- [ ] **P7-06** — UCI opening book options  
+- [x] **P7-06** — UCI opening book options  
   - **Deps:** P10-02, P7-03  
   - **Parallel-ok:** P10-04, P10-05  
   - **Deliverable:** `setoption name OwnBook` (default on for interactive play); `BookFile`; `BookDepth` (max plies); SPRT runs disable via `OwnBook false`  
   - **Acceptance:** `OwnBook false` skips book and matches current search-only behavior; `OwnBook true` + mini book changes move 1 from startpos  
-  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module) · chesswiki Opening Book · reckless UCI options
+  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module) · chesswiki Opening Book · reckless UCI options  
+  - **Note:** `uci.rs` advertises `OwnBook`/`BookFile`/`BookDepth`; `go` probes the book (via `game_ply`) before search and prints `info string book move`. `OwnBook false` restores pure search.
 
 ---
 
@@ -563,12 +563,13 @@ flowchart TB
   - **Research:** ARCHITECTURE §7 · stockfish UCI info lines
   - **Note:** Wired to real `search::go` via background thread in `tui/session.rs`.
 
-- [ ] **TUI-04** — Opening book before bot auto-move  
+- [x] **TUI-04** — Opening book before bot auto-move  
   - **Deps:** TUI-03, P10-02  
   - **Parallel-ok:** P9-03  
   - **Deliverable:** `maybe_start_engine` / `spawn_search` path probes book first; config `book.enabled` (or reuse `OwnBook`); skip search on book hit  
   - **Acceptance:** Player vs Bot and BvB at default config play `e4`/`d4`/`Nf3`/`c4` (weighted) from startpos without waiting for search  
-  - **Research:** [openings.md §4 Phase 1](./openings.md#phase-1--stop-the-bleeding-p9-adjacent) · `src/tui/session.rs` `limits_to_search`
+  - **Research:** [openings.md §4 Phase 1](./openings.md#phase-1--stop-the-bleeding-p9-adjacent) · `src/tui/session.rs` `limits_to_search`  
+  - **Note:** `EngineSession::try_book_move` probes before `spawn_search` (never in Analyze); book hit plays instantly with `Book: <mv>` status. Per-session seeded `BookRng` for variety.
 
 ---
 
@@ -668,63 +669,93 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P10-01** — Embedded mini book (ply ≤ 2)  
+- [x] **P10-01** — Embedded mini book (ply ≤ 2)  
   - **Deps:** P1-05, P1-09  
   - **Parallel-ok:** P2-07  
   - **Deliverable:** `src/book/mini.rs` — weighted first-move table (White: `e4`/`d4`/`Nf3`/`c4`; Black responses keyed on White's first move); compile-time or lazy static  
   - **Acceptance:** Unit tests: startpos probe never returns `a2a3`/`h2h3`; after `e2e4` Black returns main responses (`e7e5`, `c7c5`, …) with non-zero weight  
-  - **Research:** [openings.md §3 Option B](./openings.md#option-b--tiny-hardcoded-first-move-table-recommended-short-term) · [openings.md §5.1](./openings.md#51-what-to-include-early)
+  - **Research:** [openings.md §3 Option B](./openings.md#option-b--tiny-hardcoded-first-move-table-recommended-short-term) · [openings.md §5.1](./openings.md#51-what-to-include-early)  
+  - **Note:** `src/book/mini.rs` builds a Zobrist-keyed table by replaying UCI lines from startpos (no key literals); White first moves + Black replies keyed per first move.
 
-- [ ] **P10-02** — Book probe API + module shell  
+- [x] **P10-02** — Book probe API + module shell  
   - **Deps:** P10-01  
   - **Parallel-ok:** P7-05  
   - **Deliverable:** `src/book/mod.rs` — `Book::probe(&Position, rng) -> Option<Move>`; `BookConfig { enabled, max_plies }`; re-export mini book as default backend  
   - **Acceptance:** Library API callable from TUI/UCI without duplicating position logic; disabled book returns `None`  
-  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module)
+  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module)  
+  - **Note:** `Book::probe(&Board, ply, &mut BookRng)` validates every candidate via `parse_uci_move` (legal-only); in-tree SplitMix64 `BookRng` avoids a `rand` dep; `BookConfig { enabled, max_plies, file }`; `Book::{embedded,disabled,best_move,is_book_move}`.
 
-- [ ] **P10-03** — EPD keyed book (`openings.epd` → runtime)  
+- [x] **P10-03** — EPD keyed book (`openings.epd` → runtime)  
   - **Deps:** P10-02, P1-02  
   - **Parallel-ok:** P10-04  
   - **Deliverable:** Parse `testing/books/openings.epd` (or embedded copy) into Zobrist-keyed move lists with weights; extend lines beyond ply 2 where EPD positions allow  
   - **Acceptance:** Positions matching EPD IDs (`sicilian`, `qgd_path`, …) probe a legal continuation; IDs align with P8-03 SPRT suite  
-  - **Research:** [openings.md §5.1](./openings.md#51-what-to-include-early) · `testing/books/openings.epd`
+  - **Research:** [openings.md §5.1](./openings.md#51-what-to-include-early) · `testing/books/openings.epd`  
+  - **Note:** `src/book/epd.rs` embeds `openings.epd` (`include_str!`), parses the `hmvc`/`fmvn` opcodes, and derives book edges by linking single-move transitions between listed positions. Merged into the default book (low edge weight so mini weights dominate).
 
-- [ ] **P10-04** — Opening-phase search floor (optional)  
+- [x] **P10-04** — Opening-phase search floor (optional)  
   - **Deps:** P2-07, P7-02, P10-02  
   - **Parallel-ok:** P10-05  
   - **Deliverable:** When `ply ≤ N` and book miss, defer hard movetime abort until `depth ≥ min_opening_depth` (e.g. 4) or book max ply exceeded  
   - **Acceptance:** At 100 ms movetime from startpos with book off, search completes ≥ depth 4 before hard stop; does not stall entire game on long thinks  
-  - **Research:** [openings.md §3 Option C §4](./openings.md#option-c--fix-abort-fallback-required-regardless)
+  - **Research:** [openings.md §3 Option C §4](./openings.md#option-c--fix-abort-fallback-required-regardless)  
+  - **Note:** `Limits.min_opening_depth` + `ThreadData::hard_abort_now`; hard abort deferred while `completed_depth < floor`, bounded by `opening_hard_cap` (≥2s / 30× hard). Config `engine.opening_floor_depth` (default 4); TUI applies it on book miss for the first `OPENING_PHASE_PLIES` plies.
 
 - [ ] **P10-05** — Polyglot book loader  
   - **Deps:** P10-02, P1-09  
   - **Parallel-ok:** P10-03, P7-06  
   - **Deliverable:** Read `.bin` Polyglot entries; weighted random among entries above min weight; `BookFile` path in config  
   - **Acceptance:** Loads a public Polyglot book; startpos probe matches known main lines; corrupt/missing file falls back to mini book or search  
-  - **Research:** [openings.md §3 Option A](./openings.md#option-a--internal-opening-book-recommended-medium-term) · [Polyglot format](https://www.chessprogramming.org/Polyglot)
+  - **Research:** [openings.md §3 Option A](./openings.md#option-a--internal-opening-book-recommended-medium-term) · [Polyglot format](https://www.chessprogramming.org/Polyglot)  
+  - **Note:** Follow-up. Wiring in place: `BookConfig.file` + UCI `BookFile` route through `book::load_file`, which currently errors → falls back to the embedded default book. Needs the Polyglot 781-entry Zobrist array (distinct from `Board::key()`), 16-byte entry parsing, and castling move decode.
 
 - [ ] **P10-06** — Lichess bot book injection  
   - **Deps:** P10-02, P9-03  
   - **Parallel-ok:** P10-05  
   - **Deliverable:** Game handler probes book before `search::go`; optional online Lichess opening explorer stub documented for later  
   - **Acceptance:** Casual bot game move 1 from book; clock still decrements correctly; book off reproduces search-only behavior  
-  - **Research:** [LICHESS §14 #4](./LICHESS.md#14-open-questions) · [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing)
+  - **Research:** [LICHESS §14 #4](./LICHESS.md#14-open-questions) · [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing)  
+  - **Note:** Blocked on **P9-03** (single-game handler not yet implemented). The reusable `Book::probe` API (P10-02) is ready to drop into the game loop once P9-03 lands.
 
-- [ ] **P10-07** — SPRT vs play book policy  
+- [x] **P10-07** — SPRT vs play book policy  
   - **Deps:** P10-02, P8-03, P7-06  
   - **Parallel-ok:** P10-06  
   - **Deliverable:** Document + enforce: strength SPRT uses `OwnBook false` + fixed EPD openings; bot/TUI default `OwnBook true`; note in `CONTRIBUTING.md` / `testing/README.md`  
   - **Acceptance:** `testing/sprt.sh` unchanged for EPD seeding; engine play path clearly separated from strength measurement  
-  - **Research:** [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing) · chesswiki Opening book (testing)
+  - **Research:** [openings.md §4 Phase 3](./openings.md#phase-3--lichess--testing) · chesswiki Opening book (testing)  
+  - **Note:** `sprt.sh` now passes `option.OwnBook=false` (EPD seeding unchanged); `testing/README.md` documents the SPRT-vs-play separation.
+
+- [ ] **P10-08** — Curated opening repertoire (deep named lines)  
+  - **Deps:** P10-01, P10-02  
+  - **Parallel-ok:** P10-05  
+  - **Deliverable:** Extend the embedded book beyond first moves with specific, named main lines to a useful depth (~8–12 plies) for **both colors** — e.g. White: `1.e4` (Ruy Lopez / Italian), `1.d4` (QGD); Black vs `1.e4`: Sicilian (a chosen main line, e.g. Najdorf), vs `1.d4`: KID / QGD. Author lines as UCI/SAN sequences with per-branch weights + a human-readable opening name; replay from startpos (no Zobrist key literals). Keep it separate from the shallow default so play/SPRT behavior is unchanged unless selected.  
+  - **Acceptance:** From startpos the engine follows a complete named main line for ≥ 8 plies before search takes over; every line is legal and reaches its intended tabiya; regression test replays each line and asserts the final position/opening name.  
+  - **Research:** [openings.md §3 Option B](./openings.md#option-b--tiny-hardcoded-first-move-table-recommended-short-term) · [openings.md §5.1](./openings.md#51-what-to-include-early) · chesswiki Opening Book  
+  - **Note:** Follow-up feature (do not fold into the shallow default). Today's book only covers White move 1 + Black's first reply; this task adds real theory depth. Consider whether to hand-curate (this task) or defer to a loaded Polyglot book (P10-05).
+
+- [ ] **P10-09** — Repertoire authoring format + validation  
+  - **Deps:** P10-08  
+  - **Parallel-ok:** P10-05  
+  - **Deliverable:** A clear in-tree format for defining repertoire lines (name, move sequence, weights, side) plus a validation harness that replays every authored line, checks legality and transposition consistency (same key ⇒ merged candidates), and flags dead/duplicate branches. Document how to add or edit an opening.  
+  - **Acceptance:** `cargo test` fails if any authored line is illegal or mislabeled; contributor docs explain adding a new opening in one place.  
+  - **Research:** [openings.md §5.1](./openings.md#51-what-to-include-early)
+
+- [ ] **P10-10** — Repertoire selection & variety policy  
+  - **Deps:** P10-08  
+  - **Parallel-ok:** P10-05, P10-06  
+  - **Deliverable:** Policy + config for choosing among competing "best" lines: per-side repertoire selection (e.g. style: solid vs aggressive), weighting between equally-theoretical branches, and anti-repetition so the bot does not play the identical game every time. Expose via config/UCI where it makes sense.  
+  - **Acceptance:** Over N games from the same start the bot varies its repertoire per the configured weights; a fixed seed still reproduces a game for testing.  
+  - **Research:** [openings.md §4 Phase 2](./openings.md#phase-2--real-book-module) · chesswiki Opening Book (move selection)
 
 ---
 
 ## Openings (future)
 
-- [ ] **OPEN-01** — Opening book + Book move classification
+- [x] **OPEN-01** — Opening book + Book move classification
   - **Deps:** opening book module (Polyglot or in-tree trie), TUI post-game classifier
   - **Deliverable:** `book.probe(key)` → book moves; classifier overrides CPL class with `MoveClass::Book` when played move is in book
   - **Acceptance:** Known theory lines (e.g. 1.e4 e5 2.Nf3) get `BK` glyph in move list after analysis
+  - **Note:** `ClassifyInput.in_book` → `MoveClass::Book`; post-game analysis tags theory via an always-on `Book::embedded()`, independent of the `OwnBook` play flag.
 
 ---
 

@@ -8,6 +8,7 @@ use super::game::{
 };
 use super::san::format_san;
 use crate::board::{Board, GameResult};
+use crate::book::{Book, BookRng};
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
 use crate::types::{Color, Move, Piece, PieceType, Square, Value};
@@ -157,6 +158,12 @@ pub struct EngineSession {
     /// After a PvB→BvB takeover (`x`), this color keeps shared `bot.*` strength
     /// instead of switching to per-side Bot vs Bot settings.
     bvb_shared_side: Option<Color>,
+    /// Opening book built from [`BookConfig`] (P10-02 / TUI-04).
+    book: Book,
+    /// PRNG for weighted book selection (varied bot play).
+    book_rng: BookRng,
+    /// Opening-phase search floor depth (0 = off); applied on book miss (P10-04).
+    opening_floor_depth: i32,
 }
 
 /// Convert a side-to-move-relative search score to White-relative centipawns.
@@ -200,6 +207,9 @@ impl EngineSession {
             analysis_stm: None,
             analysis_limits: config.analysis_go_limits(),
             bvb_shared_side: None,
+            book: Book::from_config(&config.book),
+            book_rng: BookRng::from_entropy(),
+            opening_floor_depth: config.engine.opening_floor_depth as i32,
         }
     }
 
@@ -214,6 +224,8 @@ impl EngineSession {
         self.flipped = config.tui.flip_board;
         self.eval_bar_forced = config.tui.show_eval_bar;
         self.analysis_limits = config.analysis_go_limits();
+        self.book = Book::from_config(&config.book);
+        self.opening_floor_depth = config.engine.opening_floor_depth as i32;
     }
 
     pub fn set_flipped(&mut self, flipped: bool) {
@@ -913,6 +925,35 @@ impl EngineSession {
         }
     }
 
+    /// Probe the opening book before searching. On a hit, play the move
+    /// immediately and report it; returns `true` when the book handled the move.
+    ///
+    /// Only used when the bot actually plays (never in Analyze), so book moves
+    /// do not hijack manual analysis (TUI-04).
+    fn try_book_move(&mut self) -> bool {
+        if !self.search_applies_move() {
+            return false;
+        }
+        let ply = self.move_stack.len() as u32;
+        let Some(mv) = self.book.probe(&self.board, ply, &mut self.book_rng) else {
+            return false;
+        };
+        self.search_stm = Some(self.board.side_to_move());
+        self.info = SearchInfo::default();
+        match self.play_move(mv) {
+            Ok(()) => {
+                self.info.bestmove = None;
+                if !self.is_game_over() {
+                    self.status = format!("Book: {mv}");
+                }
+            }
+            Err(e) => {
+                self.status = format!("Book move failed: {e}");
+            }
+        }
+        true
+    }
+
     fn start_bot_search(&mut self, limits: GoLimits) {
         if self.info.thinking {
             self.status = "Already thinking".into();
@@ -921,6 +962,9 @@ impl EngineSession {
         let result = self.board.game_result();
         if result.is_over() {
             self.status = result.status_message().into();
+            return;
+        }
+        if self.try_book_move() {
             return;
         }
         self.apply_on_finish = self.search_applies_move();
@@ -942,7 +986,14 @@ impl EngineSession {
             "Analyzing (will not move)…".into()
         };
 
-        let search_limits = Self::limits_to_search(limits);
+        let mut search_limits = Self::limits_to_search(limits);
+        // Opening-phase floor: on a book miss early in the game, ensure the bot
+        // searches at least to the floor depth before the time abort (P10-04).
+        if self.opening_floor_depth > 0
+            && (self.move_stack.len() as u32) <= crate::search::OPENING_PHASE_PLIES
+        {
+            search_limits.min_opening_depth = Some(self.opening_floor_depth);
+        }
         self.live = Some(Self::spawn_search(self.board.clone(), search_limits));
     }
 
@@ -1120,6 +1171,9 @@ impl EngineSession {
                         played,
                         Self::board_after_plies(game, ply_idx),
                     ) {
+                        // Tag opening theory regardless of the OwnBook flag so
+                        // book moves show the BK glyph (OPEN-01).
+                        let in_book = Book::embedded().is_book_move(&board_before, played);
                         let classification = classify_move(ClassifyInput {
                             cpl,
                             prev_eval: prev,
@@ -1129,6 +1183,7 @@ impl EngineSession {
                             best_move,
                             board_before: &board_before,
                             opponent_was_bad: opponent_bad,
+                            in_book,
                         });
                         if let Some(ply) = game.plies.get_mut(ply_idx) {
                             ply.analysis = Some(PlyAnalysis {
@@ -1528,6 +1583,8 @@ mod tests {
     #[test]
     fn eval_search_does_not_block_bot_go() {
         let mut s = EngineSession::new();
+        // Disable the book so this exercises the search-threading path.
+        s.book = Book::disabled();
         s.set_mode(PlayMode::PlayerVsBot {
             human: Color::White,
         });
@@ -1553,6 +1610,62 @@ mod tests {
 
         s.stop_thinking_quiet();
         s.stop_eval_quiet();
+    }
+
+    #[test]
+    fn bot_plays_book_move_instantly() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::BotVsBot);
+        assert_eq!(s.move_stack.len(), 0);
+
+        // Book is enabled by default; the first BvB move should come from book
+        // with no background search spawned.
+        s.go(GoLimits {
+            depth: Some(20),
+            movetime: Some(Duration::from_millis(5_000)),
+        });
+        assert!(!s.is_thinking(), "book move should not spawn a search");
+        assert!(s.live.is_none());
+        assert_eq!(s.move_stack.len(), 1, "book move should be applied");
+        assert!(s.status().starts_with("Book:"), "status: {}", s.status());
+        let played = s.last_move().unwrap();
+        assert!(!matches!(
+            played.to_string().as_str(),
+            "a2a3" | "a2a4" | "h2h3" | "h2h4"
+        ));
+    }
+
+    #[test]
+    fn disabled_book_falls_through_to_search() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.book = Book::disabled();
+        s.set_mode(PlayMode::BotVsBot);
+        s.go(GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(200)),
+        });
+        // No book: a real search is spawned (thinking) and no move applied yet.
+        assert!(s.is_thinking());
+        assert!(s.live.is_some());
+        assert_eq!(s.move_stack.len(), 0);
+        s.stop_thinking_quiet();
+    }
+
+    #[test]
+    fn analyze_mode_never_uses_book() {
+        crate::lookup::initialize();
+        let mut s = EngineSession::new();
+        s.set_mode(PlayMode::Analyze);
+        s.go(GoLimits {
+            depth: Some(1),
+            movetime: Some(Duration::from_millis(200)),
+        });
+        // Analyze must search (for hints), never auto-play a book move.
+        assert!(s.is_thinking());
+        assert_eq!(s.move_stack.len(), 0);
+        s.stop_thinking_quiet();
     }
 
     #[test]

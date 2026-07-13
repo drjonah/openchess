@@ -44,6 +44,7 @@ pub struct Config {
     pub analysis: AnalysisConfig,
     pub tui: TuiConfig,
     pub engine: EngineConfig,
+    pub book: crate::book::BookConfig,
 }
 
 impl Default for Config {
@@ -54,6 +55,7 @@ impl Default for Config {
             analysis: AnalysisConfig::default(),
             tui: TuiConfig::default(),
             engine: EngineConfig::default(),
+            book: crate::book::BookConfig::default(),
         }
     }
 }
@@ -253,6 +255,9 @@ pub struct EngineConfig {
     pub move_overhead_ms: u64,
     pub limit_strength: bool,
     pub elo: u32,
+    /// Opening-phase search floor (P10-04): minimum depth to complete on opening
+    /// moves before the hard time abort applies. `0` disables the floor.
+    pub opening_floor_depth: u32,
 }
 
 impl Default for EngineConfig {
@@ -263,6 +268,7 @@ impl Default for EngineConfig {
             move_overhead_ms: 50,
             limit_strength: false,
             elo: 1400,
+            opening_floor_depth: crate::search::MIN_OPENING_DEPTH as u32,
         }
     }
 }
@@ -391,6 +397,13 @@ impl Config {
         self.engine.hash_mb = self.engine.hash_mb.clamp(MIN_HASH_MB, MAX_HASH_MB);
         self.engine.threads = self.engine.threads.clamp(MIN_THREADS, MAX_THREADS);
         self.engine.elo = self.engine.elo.clamp(MIN_ELO, MAX_ELO);
+        self.engine.opening_floor_depth = self.engine.opening_floor_depth.min(MAX_DEPTH);
+        self.book.clamp();
+    }
+
+    /// Build a ready-to-probe opening book from the current settings.
+    pub fn build_book(&self) -> crate::book::Book {
+        crate::book::Book::from_config(&self.book)
     }
 
     pub fn adjust_depth(&mut self, delta: i32) {

@@ -46,3 +46,19 @@ Typical workflow for a patch branch:
 ## Opening book
 
 `books/openings.epd` is a short EPD set for smoke tests. Replace with a larger book (e.g. UHO / 8moves_v3) for serious SPRTs.
+
+### Book policy: SPRT vs play (P10-07)
+
+There are two distinct uses of openings, and they must stay separated:
+
+- **Strength SPRT** measures search + eval quality. It runs with the engine's
+  internal opening book **off** (`option.OwnBook=false`, already set by
+  `sprt.sh`) and lets cutechess seed **fixed, shared** openings from
+  `books/openings.epd`. This keeps both engines on identical lines so the result
+  reflects the patch, not book luck.
+- **Interactive play** (TUI / GUI / future Lichess bot) keeps the internal book
+  **on** by default (`OwnBook true`), so the engine opens with human-sensible
+  theory (`e4` / `d4` / `Nf3` / `c4`) instead of relying on shallow search.
+
+Do not enable `OwnBook` for strength runs, and do not remove EPD seeding from
+`sprt.sh` — the two mechanisms are complementary, not interchangeable.

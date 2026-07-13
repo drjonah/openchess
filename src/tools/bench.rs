@@ -132,6 +132,7 @@ mod tests {
     /// Hold every selectivity A/B lock and force features on so parallel search
     /// tests cannot race the bench signature.
     fn with_stable_selectivity<R>(f: impl FnOnce() -> R) -> R {
+        let _ab = selectivity::ab_test_guard();
         let _nmp = selectivity::NMP_TEST_LOCK.lock().unwrap();
         let _lmr = selectivity::LMR_TEST_LOCK.lock().unwrap();
         let _rfp = selectivity::RFP_TEST_LOCK.lock().unwrap();

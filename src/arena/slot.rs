@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::board::{Board, GameResult};
+use crate::book::{Book, BookRng};
 use crate::config::SideStrength;
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
@@ -170,12 +171,15 @@ pub struct GameSlot {
     ply_limit: usize,
     /// Most recent completed White-relative eval (centipawns).
     eval_white_cp: Option<i32>,
+    /// Opening book (same default as interactive play — P10 / TUI-04).
+    book: Book,
+    book_rng: BookRng,
     /// When set, the slot re-pauses after applying one move (manual step).
     step_once: bool,
 }
 
 /// Build search [`Limits`] from a per-side strength (single-threaded).
-fn strength_limits(s: &SideStrength) -> Limits {
+fn strength_limits(s: &SideStrength, ply: u32) -> Limits {
     let mut limits = Limits {
         threads: 1,
         depth: Some(s.depth as i32),
@@ -183,6 +187,9 @@ fn strength_limits(s: &SideStrength) -> Limits {
     };
     if s.movetime_ms > 0 {
         limits.movetime = Some(Duration::from_millis(s.movetime_ms));
+        if ply <= crate::search::OPENING_PHASE_PLIES {
+            limits.min_opening_depth = Some(crate::search::MIN_OPENING_DEPTH);
+        }
     }
     limits
 }
@@ -231,6 +238,8 @@ impl GameSlot {
             result,
             ply_limit: ply_limit.max(1),
             eval_white_cp: None,
+            book: Book::embedded(),
+            book_rng: BookRng::from_entropy(),
             step_once: false,
         };
         if result.is_over() {
@@ -316,6 +325,11 @@ impl GameSlot {
         }
     }
 
+    /// Replace the opening book (e.g. [`Book::disabled()`] for search-only slots).
+    pub fn set_book(&mut self, book: Book) {
+        self.book = book;
+    }
+
     /// White-relative outcome (adjudicates ply-cap as a draw).
     pub fn outcome(&self) -> Outcome {
         match self.result {
@@ -333,23 +347,35 @@ impl GameSlot {
         }
     }
 
-    /// Start a background search for the side to move (no-op if not runnable).
-    pub fn begin_search(&mut self, hash_mb: usize) {
+    /// Start a background search for the side to move, or play a book move
+    /// instantly when the opening book hits (no-op if not runnable).
+    ///
+    /// Returns move/finish events when a book move was applied synchronously.
+    pub fn begin_search(&mut self, hash_mb: usize) -> Vec<SlotEvent> {
         if self.job.is_some() || self.is_finished() || self.status == SlotStatus::Paused {
-            return;
+            return Vec::new();
         }
         if self.board.game_result().is_over() {
             self.finish(FinishReason::Natural);
-            return;
+            return Vec::new();
         }
+
+        let ply = self.transcript.len() as u32;
+        if let Some(mv) = self.book.probe(&self.board, ply, &mut self.book_rng) {
+            if !mv.is_none() {
+                return self.apply_played_move(mv, None);
+            }
+        }
+
         let stm = self.board.side_to_move();
-        let limits = strength_limits(self.strength(stm));
+        let limits = strength_limits(self.strength(stm), ply);
         self.last_info = SearchInfo {
             thinking: true,
             ..SearchInfo::default()
         };
         self.job = Some(SearchJob::spawn(self.board.clone(), limits, hash_mb, stm));
         self.status = SlotStatus::Thinking;
+        Vec::new()
     }
 
     /// Poll the in-flight search; apply the move and produce events when ready.
@@ -405,7 +431,12 @@ impl GameSlot {
             }];
         }
 
-        let mv = result.best_move;
+        self.apply_played_move(result.best_move, self.eval_white_cp)
+    }
+
+    fn apply_played_move(&mut self, mv: Move, eval_cp: Option<i32>) -> Vec<SlotEvent> {
+        self.last_info.thinking = false;
+
         let san = format_san(&self.board, mv);
         self.board.make(mv);
         self.transcript.push(PlyRecord::new(mv, san));
@@ -416,7 +447,7 @@ impl GameSlot {
             slot: self.id,
             ply,
             uci: mv.to_string(),
-            eval_cp: self.eval_white_cp,
+            eval_cp,
         }];
 
         self.result = self.board.game_result();
@@ -533,6 +564,22 @@ mod tests {
         assert!(slot.is_runnable());
         assert_eq!(slot.ply_count(), 0);
         assert_eq!(slot.outcome(), Outcome::Unfinished);
+    }
+
+    #[test]
+    fn first_move_comes_from_book_without_search() {
+        crate::lookup::initialize();
+        let mut slot = GameSlot::new(0, strength(1), strength(1), 40);
+        let events = slot.begin_search(1);
+        assert!(!slot.is_thinking(), "book move should not spawn search");
+        assert_eq!(slot.ply_count(), 1, "book move should be applied");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SlotEvent::Move { ply: 1, .. }));
+        let uci = slot.last_move().unwrap().to_string();
+        assert!(
+            !matches!(uci.as_str(), "a2a3" | "a2a4" | "h2h3" | "h2h4"),
+            "unexpected flank pawn: {uci}"
+        );
     }
 
     #[test]
