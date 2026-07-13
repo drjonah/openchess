@@ -519,8 +519,7 @@ flowchart TB
   - **Parallel-ok:** P2-07, P10-01  
   - **Deliverable:** Config + UCI validation: `movetime_ms ≥ move_overhead_ms + margin` (e.g. 100 ms); reject or clamp sub-minimum bot/TUI limits  
   - **Acceptance:** Setting `bot.movetime_ms = 50` clamps to safe floor; hard budget never 0 ms with default overhead  
-  - **Research:** [openings.md §1.3](./openings.md#13-time-abort-fallback--corner-pawns) · `src/config.rs` `MIN_MOVETIME_MS`  
-  - **Note:** `Config::min_movetime_ms()` = `move_overhead + 100ms` (≥50); `clamp` + adjust helpers floor bot/white/black/eval/analysis movetimes. Combined with P2-07 the abort fallback is safe even at a 0 ms hard bound.
+  - **Note:** `config::movetime_floor_ms(overhead)` = `overhead + 50ms` (≥50); `Config::clamp` floors `bot.*` movetimes. Combined with P2-07 + P10 book the abort fallback is safe. Eval/analysis keep the plain `MIN_MOVETIME_MS`.
 
 - [x] **P7-06** — UCI opening book options  
   - **Deps:** P10-02, P7-03  
@@ -768,54 +767,61 @@ flowchart TB
 
 ### Tasks
 
-- [ ] **P9-01** — Lichess HTTP client + NDJSON reader  
+- [x] **P9-01** — Lichess HTTP client + NDJSON reader  
   - **Deps:** P1-09  
   - **Parallel-ok:** P7-03, P6-*  
   - **Deliverable:** `src/lichess/client.rs` — Bearer auth, line-by-line NDJSON, 429 backoff stub  
   - **Acceptance:** Deserializes API-doc `gameStart` / `challenge` fixtures; unit tests pass offline  
-  - **Research:** [LICHESS §5–6](./LICHESS.md#5-transport-primitives)
+  - **Research:** [LICHESS §5–6](./LICHESS.md#5-transport-primitives)  
+  - **Note:** Generic `NdjsonStream<T>` reader (global + per-game share it); `post_empty`/`post_form`/`play_move`/`resign`/`abort`; `NdjsonStream::from_reader` enables offline mock-stream tests.
 
-- [ ] **P9-02** — Global event stream loop  
+- [x] **P9-02** — Global event stream loop  
   - **Deps:** P9-01  
   - **Parallel-ok:** P7-03, P6-*  
   - **Deliverable:** `openchess lichess run --dry-run` — connect `/api/stream/event`, log events, handle keepalive pings  
   - **Acceptance:** Manual run logs `challenge` / `gameStart` / `gameFinish`; reconnects on drop  
-  - **Research:** [LICHESS §6](./LICHESS.md#6-global-event-stream-get-apistreamevent)
+  - **Research:** [LICHESS §6](./LICHESS.md#6-global-event-stream-get-apistreamevent)  
+  - **Note:** `cli::run_event_loop` dedups replays, reconnects with `pgn::backoff_delay`. Live logging is manual (needs token).
 
-- [ ] **P9-03** — Single-game handler  
+- [x] **P9-03** — Single-game handler  
   - **Deps:** P9-02, P2-02, P7-02  
   - **Parallel-ok:** P6-*, P7-03, P10-02 (book hook lands in P10-06; not blocking first legal game)  
   - **Deliverable:** Per-game stream → `Board` + `TimeBudget` → search → `POST` move; one concurrent game  
   - **Acceptance:** Completes one casual (`rated=false`) bot game without illegal moves or time forfeits  
-  - **Research:** [LICHESS §7](./LICHESS.md#7-per-game-stream-get-apibotgamestreamgameid) · [LICHESS §9](./LICHESS.md#9-mapping-lichess-clocks--openchess-timetimbudget) · [openings.md](./openings.md)
+  - **Research:** [LICHESS §7](./LICHESS.md#7-per-game-stream-get-apibotgamestreamgameid) · [LICHESS §9](./LICHESS.md#9-mapping-lichess-clocks--openchess-timetimbudget) · [openings.md](./openings.md)  
+  - **Note:** `game::GameDriver` (stateless per-update board replay from `initialFen`+`moves`, clock→`Limits`, `search::go`) + `game::play_game` loop. Offline-tested via mock NDJSON streams; **live casual-game smoke pending token**.
 
-- [ ] **P9-04** — Challenge filter + accept  
+- [x] **P9-04** — Challenge filter + accept  
   - **Deps:** P9-03  
   - **Parallel-ok:** P9-05, P9-06  
   - **Deliverable:** TOML/env config; accept only `standard` + allowed speeds; decline rest  
   - **Acceptance:** Ignores non-standard variants; accepts configured rapid/blitz challenges  
-  - **Research:** [LICHESS §8.1](./LICHESS.md#81-receive-challenges)
+  - **Research:** [LICHESS §8.1](./LICHESS.md#81-receive-challenges)  
+  - **Note:** `config::LichessConfig::decide` (variant/speed/rated/rating-band/bot-only) → `challenge::handle_incoming`. Config is JSON-deserializable (TOML mapping is future).
 
-- [ ] **P9-05** — Outbound challenge  
+- [x] **P9-05** — Outbound challenge  
   - **Deps:** P9-03  
   - **Parallel-ok:** P9-04, P9-06  
   - **Deliverable:** `openchess lichess challenge <username>` — `POST /api/challenge/{user}`  
   - **Acceptance:** Challenges online bot; plays game when accepted  
-  - **Research:** [LICHESS §8.2](./LICHESS.md#82-challenge-other-bots)
+  - **Research:** [LICHESS §8.2](./LICHESS.md#82-challenge-other-bots)  
+  - **Note:** `challenge::OutboundChallenge` (form fields incl. `keepAliveStream`) + `lichess challenge` CLI. Live challenge/play **pending token**.
 
-- [ ] **P9-06** — PGN export + game log  
+- [x] **P9-06** — PGN export + game log  
   - **Deps:** P9-03  
   - **Parallel-ok:** P9-04, P9-05  
   - **Deliverable:** On `gameFinish`, `GET /game/export/{id}` to `~/.cache/openchess/lichess/` or stdout  
   - **Acceptance:** Saved PGN matches lichess.org game page  
-  - **Research:** [LICHESS §13](./LICHESS.md#13-api-endpoint-cheat-sheet)
+  - **Research:** [LICHESS §13](./LICHESS.md#13-api-endpoint-cheat-sheet)  
+  - **Note:** `pgn::export_game` writes `{cache}/openchess/lichess/{id}.pgn` after each played game. Content match **pending token**.
 
-- [ ] **P9-07** — Reconnect + rate-limit hardening  
+- [x] **P9-07** — Reconnect + rate-limit hardening  
   - **Deps:** P9-02  
   - **Parallel-ok:** P9-04..P9-06  
   - **Deliverable:** Exponential backoff on stream drop; serialize REST while streaming; 429 sleep  
   - **Acceptance:** Survives forced disconnect in manual test without duplicate accepts  
-  - **Research:** [LICHESS §5.2](./LICHESS.md#52-rate-limiting) · [LICHESS §11.4](./LICHESS.md#114-error-handling--reconnects)
+  - **Research:** [LICHESS §5.2](./LICHESS.md#52-rate-limiting) · [LICHESS §11.4](./LICHESS.md#114-error-handling--reconnects)  
+  - **Note:** `pgn::backoff_delay` (4→8→16→32 s cap) + 60 s `RATE_LIMIT_SLEEP`; single blocking connection (one game inline) serializes REST; replay dedup avoids double-accept. Forced-disconnect survival **pending token**.
 
 ---
 
