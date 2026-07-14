@@ -146,3 +146,58 @@ fn capture_promotion_into_defended_square_reflects_recapture() {
     // Gain knight + (Q−P), then lose the queen on the recapture → knight − pawn.
     assert_eq!(board.see(promo), KNIGHT_VALUE - PAWN_VALUE);
 }
+
+/// S2-02: opponent pawn recaptures with promotion — exchange is losing.
+///
+/// Qxb1, then axb1=Q. Without promo modeling SEE would be knight − queen;
+/// with promo the (Q − P) bonus makes it more negative.
+#[test]
+fn losing_recapture_promotion_is_negative() {
+    init();
+    let mut board = Board::empty();
+    board.put_piece(Piece::WhiteQueen, sq("b8"));
+    board.put_piece(Piece::BlackKnight, sq("b1"));
+    board.put_piece(Piece::BlackPawn, sq("a2"));
+    board.set_side_to_move(Color::White);
+    let see = board.see(Move::new(sq("b8"), sq("b1")));
+    assert_eq!(
+        see,
+        KNIGHT_VALUE - QUEEN_VALUE - (QUEEN_VALUE - PAWN_VALUE)
+    );
+    assert!(see < 0);
+}
+
+/// S2-02: our pawn can promo-recapture, flipping an otherwise losing capture.
+///
+/// Qxc8 (rook), Ba6xc8 (bishop), b7xc8=Q. Without promo SEE is negative; with
+/// queen promotion on the second recapture, STM stands at +rook (winning).
+#[test]
+fn winning_recapture_promotion_is_positive() {
+    init();
+    let mut board = Board::empty();
+    board.put_piece(Piece::WhiteQueen, sq("c3"));
+    board.put_piece(Piece::WhitePawn, sq("b7"));
+    board.put_piece(Piece::BlackRook, sq("c8"));
+    board.put_piece(Piece::BlackBishop, sq("a6"));
+    board.set_side_to_move(Color::White);
+    let see = board.see(Move::new(sq("c3"), sq("c8")));
+    assert_eq!(see, ROOK_VALUE);
+    assert!(see > 0);
+}
+
+/// S2-02: black-to-move, white pawn promo-recaptures on rank 8.
+#[test]
+fn black_to_move_loses_to_white_promo_recapture() {
+    init();
+    let mut board = Board::empty();
+    board.put_piece(Piece::BlackQueen, sq("b1"));
+    board.put_piece(Piece::WhiteKnight, sq("b8"));
+    board.put_piece(Piece::WhitePawn, sq("a7"));
+    board.set_side_to_move(Color::Black);
+    let see = board.see(Move::new(sq("b1"), sq("b8")));
+    assert_eq!(
+        see,
+        KNIGHT_VALUE - QUEEN_VALUE - (QUEEN_VALUE - PAWN_VALUE)
+    );
+    assert!(see < 0);
+}
