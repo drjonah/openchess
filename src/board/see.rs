@@ -32,10 +32,10 @@ impl Board {
     ///
     /// This is the classic "swap algorithm": pin/legality of intermediate
     /// captures is *not* checked (a king "capturing" is allowed to appear in
-    /// the swap list, valued high so it is only ever used last). The *first*
-    /// move's promotion bonus is modeled (gain includes promo − pawn, and the
-    /// piece left on the target is the promoted type); promotions during later
-    /// recaptures in the swap are not.
+    /// the swap list, valued high so it is only ever used last). Promotion is
+    /// modeled for the first move and for later pawn recaptures onto the
+    /// promotion rank (assumed queen promotion), including the promo − pawn
+    /// bonus and leaving a queen on the target for subsequent swaps.
     pub fn see(&self, m: Move) -> Value {
         let from = m.from();
         let to = m.to();
@@ -84,7 +84,14 @@ impl Board {
             gain[depth] = piece_value(attacker_type) - gain[depth - 1];
 
             occ.clear(attacker_sq);
-            attacker_type = pt;
+
+            // Pawn recapture onto the promotion rank: assume queen promotion.
+            if pt == PieceType::Pawn && Self::is_promotion_rank(to, side) {
+                gain[depth] += piece_value(PieceType::Queen) - piece_value(PieceType::Pawn);
+                attacker_type = PieceType::Queen;
+            } else {
+                attacker_type = pt;
+            }
             side = !side;
         }
 
@@ -94,6 +101,15 @@ impl Board {
         }
 
         gain[0]
+    }
+
+    /// True when `sq` is the promotion rank for `side` (rank 8 for white, rank 1 for black).
+    #[inline]
+    const fn is_promotion_rank(sq: Square, side: Color) -> bool {
+        match side {
+            Color::White => sq.rank() == 7,
+            Color::Black => sq.rank() == 0,
+        }
     }
 
     /// All pieces of either color attacking `sq` given occupancy `occ`
