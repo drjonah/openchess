@@ -687,9 +687,3 @@ fn capture_value(board: &Board, mv: Move) -> Value {
     }
     v
 }
-
-/// Suppress unused import warning for VALUE_MATE in mate helpers path.
-#[allow(dead_code)]
-fn _mate_range() -> Value {
-    VALUE_MATE
-}

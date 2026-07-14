@@ -285,6 +285,7 @@ mod tests {
     use super::*;
     use crate::lookup;
     use std::io::Write;
+    use std::str::FromStr;
 
     fn init() {
         lookup::initialize();

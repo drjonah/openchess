@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::cli_util::{parse_value, take_value};
 use crate::config::SideStrength;
 
 use super::batch::{self, BatchOptions};
@@ -133,35 +134,38 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
     while i < args.len() {
         let flag = args[i].clone();
         match flag.as_str() {
-            "--games" => games = parse_usize(&take_value(args, &mut i, &flag)?, &flag)?,
+            "--games" => games = parse_value::<usize>(&take_value(args, &mut i, &flag)?, &flag)?,
             "--depth" => {
-                shared.depth = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64)
+                shared.depth =
+                    parse_value::<u32>(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64)
             }
             "--movetime" => {
-                shared.movetime_ms = parse_u64(&take_value(args, &mut i, &flag)?, &flag)?
+                shared.movetime_ms = parse_value::<u64>(&take_value(args, &mut i, &flag)?, &flag)?
             }
             "--white-depth" => {
-                let v = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64);
+                let v = parse_value::<u32>(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64);
                 white.get_or_insert_with(|| shared.clone()).depth = v;
             }
             "--white-movetime" => {
-                let v = parse_u64(&take_value(args, &mut i, &flag)?, &flag)?;
+                let v = parse_value::<u64>(&take_value(args, &mut i, &flag)?, &flag)?;
                 white.get_or_insert_with(|| shared.clone()).movetime_ms = v;
             }
             "--black-depth" => {
-                let v = parse_u32(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64);
+                let v = parse_value::<u32>(&take_value(args, &mut i, &flag)?, &flag)?.clamp(1, 64);
                 black.get_or_insert_with(|| shared.clone()).depth = v;
             }
             "--black-movetime" => {
-                let v = parse_u64(&take_value(args, &mut i, &flag)?, &flag)?;
+                let v = parse_value::<u64>(&take_value(args, &mut i, &flag)?, &flag)?;
                 black.get_or_insert_with(|| shared.clone()).movetime_ms = v;
             }
             "--concurrency" => {
-                concurrency = parse_usize(&take_value(args, &mut i, &flag)?, &flag)?.max(1)
+                concurrency = parse_value::<usize>(&take_value(args, &mut i, &flag)?, &flag)?.max(1)
             }
-            "--hash" => hash_mb = parse_usize(&take_value(args, &mut i, &flag)?, &flag)?.max(1),
+            "--hash" => {
+                hash_mb = parse_value::<usize>(&take_value(args, &mut i, &flag)?, &flag)?.max(1)
+            }
             "--max-plies" => {
-                ply_limit = parse_usize(&take_value(args, &mut i, &flag)?, &flag)?.max(1)
+                ply_limit = parse_value::<usize>(&take_value(args, &mut i, &flag)?, &flag)?.max(1)
             }
             "--pgn-dir" => pgn_dir = Some(PathBuf::from(take_value(args, &mut i, &flag)?)),
             "--jsonl" => jsonl = true,
@@ -196,25 +200,6 @@ fn parse_options(args: &[String]) -> Result<ParsedOptions, String> {
         pgn_dir,
         jsonl,
     })
-}
-
-fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
-    *i += 1;
-    args.get(*i)
-        .cloned()
-        .ok_or_else(|| format!("{flag} needs a value"))
-}
-
-fn parse_usize(s: &str, flag: &str) -> Result<usize, String> {
-    s.parse().map_err(|_| format!("{flag}: not a number: {s}"))
-}
-
-fn parse_u32(s: &str, flag: &str) -> Result<u32, String> {
-    s.parse().map_err(|_| format!("{flag}: not a number: {s}"))
-}
-
-fn parse_u64(s: &str, flag: &str) -> Result<u64, String> {
-    s.parse().map_err(|_| format!("{flag}: not a number: {s}"))
 }
 
 fn print_usage() {

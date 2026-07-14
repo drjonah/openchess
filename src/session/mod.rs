@@ -1,7 +1,8 @@
 //! Shared engine search-session primitives used by the TUI and arena (P11-09).
 //!
-//! Owns background `search::go` spawning / live-info polling / stop-join.
-//! Does not own play modes, move input, or UI state.
+//! Owns background `search::go` spawning / live-info polling / stop-join, plus
+//! the front-end [`GoLimits`] request type. Does not own play modes, move
+//! input, or UI state — those stay in `config` / `tui`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,6 +13,41 @@ use crate::board::Board;
 use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
 use crate::types::Color;
+
+/// Default movetime applied when a [`GoLimits`] specifies neither depth nor
+/// movetime, so an otherwise-empty request still terminates promptly.
+const DEFAULT_GO_MOVETIME: Duration = Duration::from_millis(400);
+
+/// Depth / movetime request shared by the TUI, config, and arena front-ends.
+///
+/// This is the front-end vocabulary for "how hard to think"; it is lowered to
+/// the engine's [`Limits`] via [`GoLimits::to_search_limits`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GoLimits {
+    pub depth: Option<u32>,
+    pub movetime: Option<Duration>,
+}
+
+impl GoLimits {
+    /// Lower a front-end request to engine [`Limits`].
+    ///
+    /// A depth-only request stays depth-only (no implicit movetime cap); any
+    /// other request keeps its movetime, falling back to [`DEFAULT_GO_MOVETIME`]
+    /// when none was given.
+    pub fn to_search_limits(self) -> Limits {
+        let movetime = if self.depth.is_some() && self.movetime.is_none() {
+            None
+        } else {
+            self.movetime.or(Some(DEFAULT_GO_MOVETIME))
+        };
+        Limits {
+            depth: self.depth.map(|d| d as i32),
+            movetime,
+            nodes: None,
+            ..Default::default()
+        }
+    }
+}
 
 /// Compact search stats published to the UI / inspector.
 #[derive(Clone, Debug, Default)]
@@ -25,6 +61,20 @@ pub struct SearchInfo {
     pub bestmove: Option<String>,
 }
 
+impl SearchInfo {
+    /// Overlay the latest per-iteration snapshot from a running worker.
+    ///
+    /// Copies only the streamed search stats; the lifecycle fields (`thinking`,
+    /// `bestmove`) are owned by the caller and left untouched.
+    pub fn apply_live(&mut self, live: &LiveInfo) {
+        self.depth = live.depth;
+        self.score_cp = live.score_cp;
+        self.nodes = live.nodes;
+        self.time = live.time;
+        self.pv = live.pv.clone();
+    }
+}
+
 /// Per-iteration search stats shared from the worker thread.
 #[derive(Clone, Debug, Default)]
 pub struct LiveInfo {
@@ -36,11 +86,16 @@ pub struct LiveInfo {
 }
 
 /// Background search job started by [`LiveSearch::spawn`].
+///
+/// Internals are private on purpose: drive the job through
+/// [`request_stop`](Self::request_stop), [`shutdown`](Self::shutdown),
+/// [`is_ready`](Self::is_ready), [`snapshot_live`](Self::snapshot_live), and
+/// [`take_result`](Self::take_result) rather than poking the shared state.
 pub struct LiveSearch {
-    pub stop: Arc<AtomicBool>,
-    pub result: Arc<Mutex<Option<SearchResult>>>,
-    pub live_info: Arc<Mutex<LiveInfo>>,
-    pub handle: Option<JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<SearchResult>>>,
+    live_info: Arc<Mutex<LiveInfo>>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl LiveSearch {

@@ -183,9 +183,7 @@ fn take_value(v: Option<&String>, flag: &str) -> Result<String, String> {
 }
 
 fn parse_num(v: Option<&String>, flag: &str) -> Result<u64, String> {
-    take_value(v, flag)?
-        .parse()
-        .map_err(|_| format!("{flag} requires a number"))
+    crate::cli_util::parse_value(&take_value(v, flag)?, flag)
 }
 
 fn run_event_loop(args: &[String]) -> Result<(), LichessError> {

@@ -537,7 +537,7 @@ mod tests {
     fn abort_keeps_prior_bestmove() {
         init();
         let mut board = Board::startpos();
-        let mut tt = TranspositionTable::new(8);
+        let tt = TranspositionTable::new(8);
         let stop = AtomicBool::new(false);
         // Run depth 2 first to establish a move, then abort mid deeper search.
         let first = go(
@@ -730,7 +730,7 @@ mod tests {
 
         selectivity::NMP_ENABLED.store(false, Ordering::Relaxed);
         let mut board_off = Board::startpos();
-        let mut tt_off = TranspositionTable::new(16);
+        let tt_off = TranspositionTable::new(16);
         let off = go(
             &mut board_off,
             Limits {
@@ -744,7 +744,7 @@ mod tests {
 
         selectivity::NMP_ENABLED.store(true, Ordering::Relaxed);
         let mut board_on = Board::startpos();
-        let mut tt_on = TranspositionTable::new(16);
+        let tt_on = TranspositionTable::new(16);
         let on = go(
             &mut board_on,
             Limits {
@@ -775,7 +775,7 @@ mod tests {
 
         selectivity::LMR_ENABLED.store(false, Ordering::Relaxed);
         let mut board_off = Board::startpos();
-        let mut tt_off = TranspositionTable::new(16);
+        let tt_off = TranspositionTable::new(16);
         let off = go(
             &mut board_off,
             Limits {
@@ -789,7 +789,7 @@ mod tests {
 
         selectivity::LMR_ENABLED.store(true, Ordering::Relaxed);
         let mut board_on = Board::startpos();
-        let mut tt_on = TranspositionTable::new(16);
+        let tt_on = TranspositionTable::new(16);
         let on = go(
             &mut board_on,
             Limits {
@@ -822,7 +822,7 @@ mod tests {
         selectivity::RFP_ENABLED.store(false, Ordering::Relaxed);
         selectivity::RAZORING_ENABLED.store(false, Ordering::Relaxed);
         let mut board_off = Board::startpos();
-        let mut tt_off = TranspositionTable::new(16);
+        let tt_off = TranspositionTable::new(16);
         let off = go(
             &mut board_off,
             Limits {
@@ -837,7 +837,7 @@ mod tests {
         selectivity::RFP_ENABLED.store(true, Ordering::Relaxed);
         selectivity::RAZORING_ENABLED.store(true, Ordering::Relaxed);
         let mut board_on = Board::startpos();
-        let mut tt_on = TranspositionTable::new(16);
+        let tt_on = TranspositionTable::new(16);
         let on = go(
             &mut board_on,
             Limits {
@@ -874,7 +874,7 @@ mod tests {
         selectivity::HISTORY_PRUNE_ENABLED.store(false, Ordering::Relaxed);
         selectivity::SEE_PRUNE_ENABLED.store(false, Ordering::Relaxed);
         let mut board_off = Board::startpos();
-        let mut tt_off = TranspositionTable::new(16);
+        let tt_off = TranspositionTable::new(16);
         let off = go(
             &mut board_off,
             Limits {
@@ -891,7 +891,7 @@ mod tests {
         selectivity::HISTORY_PRUNE_ENABLED.store(true, Ordering::Relaxed);
         selectivity::SEE_PRUNE_ENABLED.store(true, Ordering::Relaxed);
         let mut board_on = Board::startpos();
-        let mut tt_on = TranspositionTable::new(16);
+        let tt_on = TranspositionTable::new(16);
         let on = go(
             &mut board_on,
             Limits {
@@ -924,7 +924,7 @@ mod tests {
         selectivity::PROBCUT_ENABLED.store(false, Ordering::Relaxed);
         selectivity::IIR_ENABLED.store(false, Ordering::Relaxed);
         let mut board_off = Board::startpos();
-        let mut tt_off = TranspositionTable::new(16);
+        let tt_off = TranspositionTable::new(16);
         let off = go(
             &mut board_off,
             Limits {
@@ -939,7 +939,7 @@ mod tests {
         selectivity::PROBCUT_ENABLED.store(true, Ordering::Relaxed);
         selectivity::IIR_ENABLED.store(true, Ordering::Relaxed);
         let mut board_on = Board::startpos();
-        let mut tt_on = TranspositionTable::new(16);
+        let tt_on = TranspositionTable::new(16);
         let on = go(
             &mut board_on,
             Limits {
@@ -972,7 +972,7 @@ mod tests {
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         )
         .unwrap();
-        let mut tt = TranspositionTable::new(16);
+        let tt = TranspositionTable::new(16);
         let stop = AtomicBool::new(false);
         let mut td = ThreadData::default();
         td.nnue.refresh(&board);
@@ -1029,7 +1029,7 @@ mod tests {
     fn clock_search_respects_hard() {
         init();
         let mut board = Board::startpos();
-        let mut tt = TranspositionTable::new(8);
+        let tt = TranspositionTable::new(8);
         let stop = AtomicBool::new(false);
         let overhead = Duration::from_millis(50);
         let wtime = Duration::from_millis(200);

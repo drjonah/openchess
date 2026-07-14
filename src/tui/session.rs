@@ -13,67 +13,11 @@ use crate::search::{Limits, SearchResult};
 use crate::session::LiveSearch;
 use crate::types::{Color, Move, Piece, PieceType, Square};
 use std::str::FromStr;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-// Re-export for callers that historically imported from `tui::session`.
-pub use crate::session::{SearchInfo, stm_score_to_white};
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GoLimits {
-    pub depth: Option<u32>,
-    pub movetime: Option<Duration>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlayMode {
-    PlayerVsPlayer,
-    PlayerVsBot { human: Color },
-    BotVsBot,
-    Analyze,
-}
-
-impl PlayMode {
-    pub const ALL: [PlayMode; 5] = [
-        PlayMode::PlayerVsPlayer,
-        PlayMode::PlayerVsBot {
-            human: Color::White,
-        },
-        PlayMode::PlayerVsBot {
-            human: Color::Black,
-        },
-        PlayMode::BotVsBot,
-        PlayMode::Analyze,
-    ];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            PlayMode::PlayerVsPlayer => "Player vs Player",
-            PlayMode::PlayerVsBot {
-                human: Color::White,
-            } => "Player vs Bot (you White)",
-            PlayMode::PlayerVsBot {
-                human: Color::Black,
-            } => "Player vs Bot (you Black)",
-            PlayMode::BotVsBot => "Bot vs Bot",
-            PlayMode::Analyze => "Analyze",
-        }
-    }
-
-    pub fn blurb(self) -> &'static str {
-        match self {
-            PlayMode::PlayerVsPlayer => "You move both colors — one move at a time",
-            PlayMode::PlayerVsBot {
-                human: Color::White,
-            } => "Enter your move; bot replies",
-            PlayMode::PlayerVsBot {
-                human: Color::Black,
-            } => "Enter your move; bot replies",
-            PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
-            PlayMode::Analyze => "Start empty or import FEN / PGN / game",
-        }
-    }
-}
+// Re-export for callers that historically imported these from `tui::session`.
+pub use crate::config::PlayMode;
+pub use crate::session::{GoLimits, SearchInfo, stm_score_to_white};
 
 /// Sequential post-game analysis of an imported transcript.
 struct PostGameState {
@@ -136,6 +80,8 @@ pub struct EngineSession {
     book_rng: BookRng,
     /// Opening-phase search floor depth (0 = off); applied on book miss (P10-04).
     opening_floor_depth: i32,
+    /// Private TT size (MB) for interactive searches (from `engine.hash_mb`).
+    hash_mb: usize,
 }
 
 impl EngineSession {
@@ -174,6 +120,7 @@ impl EngineSession {
             book: Book::from_config(&config.book),
             book_rng: BookRng::from_entropy(),
             opening_floor_depth: config.engine.opening_floor_depth as i32,
+            hash_mb: config.engine.hash_mb.max(1) as usize,
         }
     }
 
@@ -190,6 +137,7 @@ impl EngineSession {
         self.analysis_limits = config.analysis_go_limits();
         self.book = Book::from_config(&config.book);
         self.opening_floor_depth = config.engine.opening_floor_depth as i32;
+        self.hash_mb = config.engine.hash_mb.max(1) as usize;
     }
 
     pub fn set_flipped(&mut self, flipped: bool) {
@@ -420,7 +368,7 @@ impl EngineSession {
     fn live_eval_worker_score(&self) -> Option<i32> {
         let stm = self.eval_stm?;
         let live = self.eval_live.as_ref()?;
-        let snap = live.live_info.lock().ok()?;
+        let snap = live.snapshot_live();
         if snap.depth > 0 || snap.nodes > 0 {
             Some(stm_score_to_white(snap.score_cp, stm))
         } else {
@@ -684,10 +632,7 @@ impl EngineSession {
 
     fn stop_thinking_quiet(&mut self) {
         if let Some(mut live) = self.live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
+            live.shutdown();
         }
         self.info.thinking = false;
         self.go_started = None;
@@ -697,10 +642,7 @@ impl EngineSession {
 
     fn stop_eval_quiet(&mut self) {
         if let Some(mut live) = self.eval_live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
+            live.shutdown();
         }
         self.eval_stm = None;
         self.eval_position_key = None;
@@ -708,10 +650,7 @@ impl EngineSession {
 
     fn stop_post_game_quiet(&mut self) {
         if let Some(mut live) = self.analysis_live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
+            live.shutdown();
         }
         self.analysis_stm = None;
         self.post_game = None;
@@ -755,8 +694,8 @@ impl EngineSession {
             }
         };
         self.analysis_stm = Some(board.side_to_move());
-        let search_limits = Self::limits_to_search(limits);
-        self.analysis_live = Some(Self::spawn_search(board, search_limits));
+        let search_limits = limits.to_search_limits();
+        self.analysis_live = Some(self.spawn_search(board, search_limits));
         if step == 0 {
             self.status = format!("Analyzing 0/{total}… · ←/→ step");
         } else {
@@ -829,28 +768,8 @@ impl EngineSession {
         self.start_eval_search(limits);
     }
 
-    fn limits_to_search(limits: GoLimits) -> Limits {
-        // If only depth is set, don't also force a short movetime.
-        if limits.depth.is_some() && limits.movetime.is_none() {
-            Limits {
-                depth: limits.depth.map(|d| d as i32),
-                movetime: None,
-                nodes: None,
-                ..Default::default()
-            }
-        } else {
-            Limits {
-                depth: limits.depth.map(|d| d as i32),
-                movetime: limits.movetime.or(Some(Duration::from_millis(400))),
-                nodes: None,
-                ..Default::default()
-            }
-        }
-    }
-
-    fn spawn_search(board: Board, search_limits: Limits) -> LiveSearch {
-        // Fixed 16 MB TT for interactive TUI searches.
-        LiveSearch::spawn(board, search_limits, 16)
+    fn spawn_search(&self, board: Board, search_limits: Limits) -> LiveSearch {
+        LiveSearch::spawn(board, search_limits, self.hash_mb)
     }
 
     /// Probe the opening book before searching. On a hit, play the move
@@ -914,7 +833,7 @@ impl EngineSession {
             "Analyzing (will not move)…".into()
         };
 
-        let mut search_limits = Self::limits_to_search(limits);
+        let mut search_limits = limits.to_search_limits();
         // Opening-phase floor: on a book miss early in the game, ensure the bot
         // searches at least to the floor depth before the time abort (P10-04).
         if self.opening_floor_depth > 0
@@ -922,20 +841,20 @@ impl EngineSession {
         {
             search_limits.min_opening_depth = Some(self.opening_floor_depth);
         }
-        self.live = Some(Self::spawn_search(self.board.clone(), search_limits));
+        self.live = Some(self.spawn_search(self.board.clone(), search_limits));
     }
 
     fn start_eval_search(&mut self, limits: GoLimits) {
         self.eval_stm = Some(self.board.side_to_move());
         self.eval_position_key = Some(self.position_key());
-        let search_limits = Self::limits_to_search(limits);
-        self.eval_live = Some(Self::spawn_search(self.board.clone(), search_limits));
+        let search_limits = limits.to_search_limits();
+        self.eval_live = Some(self.spawn_search(self.board.clone(), search_limits));
     }
 
     pub fn stop(&mut self) {
         if self.info.thinking {
             if let Some(live) = &self.live {
-                live.stop.store(true, Ordering::Relaxed);
+                live.request_stop();
             }
             self.finish_search(true);
         }
@@ -957,28 +876,22 @@ impl EngineSession {
         self.info.time = started.elapsed();
 
         if let Some(live) = self.live.as_ref() {
-            if let Ok(snap) = live.live_info.lock() {
-                if snap.depth > 0 || snap.nodes > 0 || !snap.pv.is_empty() {
-                    self.info.depth = snap.depth;
-                    self.info.score_cp = snap.score_cp;
-                    self.info.nodes = snap.nodes;
-                    // Never stream PV during bot play.
-                    if self.show_engine_hints() {
-                        self.info.pv = snap.pv.clone();
-                    } else {
-                        self.info.pv.clear();
-                    }
-                }
+            let snap = live.snapshot_live();
+            if snap.depth > 0 || snap.nodes > 0 || !snap.pv.is_empty() {
+                self.info.depth = snap.depth;
+                self.info.score_cp = snap.score_cp;
+                self.info.nodes = snap.nodes;
+                // Keep the wall-clock live timer (info.time) set above; never
+                // stream the PV during bot play.
+                self.info.pv = if self.show_engine_hints() {
+                    snap.pv
+                } else {
+                    String::new()
+                };
             }
         }
 
-        let ready = self
-            .live
-            .as_ref()
-            .and_then(|l| l.result.lock().ok())
-            .map(|g| g.is_some())
-            .unwrap_or(false);
-
+        let ready = self.live.as_ref().map(LiveSearch::is_ready).unwrap_or(false);
         if ready {
             self.finish_search(false);
         }
@@ -992,8 +905,7 @@ impl EngineSession {
         let ready = self
             .eval_live
             .as_ref()
-            .and_then(|l| l.result.lock().ok())
-            .map(|g| g.is_some())
+            .map(LiveSearch::is_ready)
             .unwrap_or(false);
 
         if !ready {
@@ -1002,16 +914,7 @@ impl EngineSession {
 
         let key = self.eval_position_key;
         let stm = self.eval_stm;
-        let mut live = self.eval_live.take().unwrap();
-        live.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = live.handle.take() {
-            let _ = handle.join();
-        }
-        let result = live
-            .result
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take());
+        let result = self.eval_live.take().unwrap().take_result();
 
         self.eval_stm = None;
         self.eval_position_key = None;
@@ -1040,8 +943,7 @@ impl EngineSession {
         let ready = self
             .analysis_live
             .as_ref()
-            .and_then(|l| l.result.lock().ok())
-            .map(|g| g.is_some())
+            .map(LiveSearch::is_ready)
             .unwrap_or(false);
 
         if !ready {
@@ -1049,12 +951,7 @@ impl EngineSession {
         }
 
         let stm = self.analysis_stm;
-        let mut live = self.analysis_live.take().unwrap();
-        live.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = live.handle.take() {
-            let _ = handle.join();
-        }
-        let result = live.result.lock().ok().and_then(|mut g| g.take());
+        let result = self.analysis_live.take().unwrap().take_result();
         self.analysis_stm = None;
 
         let Some(result) = result else {
@@ -1142,15 +1039,7 @@ impl EngineSession {
 
     fn finish_search(&mut self, stopped: bool) {
         if let Some(mut live) = self.live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
-            let result = live
-                .result
-                .lock()
-                .ok()
-                .and_then(|mut g| g.take());
+            let result = live.take_result();
             self.apply_search_result(result, stopped);
         } else {
             self.info.thinking = false;
