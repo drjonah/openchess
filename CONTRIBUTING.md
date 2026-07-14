@@ -43,3 +43,9 @@ Requires [cutechess-cli](https://github.com/cutechess/cutechess) on `PATH`.
 - One strength change at a time after the trained net lands; retune with SPRT.
 - Copy structure from Stockfish/Reckless research docs; retune constants with SPRT.
 - Speculative ideas stay in [research/uniqueideas.md](research/uniqueideas.md) — not the default strength path.
+
+## Lichess ops
+
+- Operator smoke checklist: [README.md](README.md) “Lichess bot”.
+- Defaults stay **casual** and **bots-preferred** until **L2-06** (deps: Q2-03 trained net + M2-02 strength-PR gate + live L2-02/03). Do not flip `accept_rated` / ship `--accept-rated` as the default before that gate.
+- Never commit `LICHESS_TOKEN` or other secrets.

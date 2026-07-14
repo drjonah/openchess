@@ -2,18 +2,21 @@
 //!
 //! ```text
 //! cargo run --features lichess -- lichess run --dry-run
-//! cargo run --features lichess -- lichess run --play
+//! cargo run --features lichess -- lichess run --play --config examples/lichess.toml
 //! cargo run --features lichess -- lichess challenge <username>
 //! ```
+//!
+//! The Lichess path never ponders: search runs only on our turn (see `game.rs`).
 
 use super::challenge::{self, OutboundChallenge};
 use super::client::{Client, NdjsonItem};
-use super::config::LichessConfig;
+use super::config::{ConfigOverrides, LichessConfig};
 use super::events::StreamEvent;
 use super::game::{self, PlayOptions};
 use super::{pgn, LichessError};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -65,7 +68,11 @@ fn print_help() {
          run options:\n\
          \x20 --dry-run           Log events only, never POST (default)\n\
          \x20 --play              Accept challenges and play games\n\
-         \x20 --accept-rated      Accept rated challenges (default: casual only)\n\
+         \x20 --config PATH       Load accept policy from .toml or .json\n\
+         \x20 --accept-rated      Allow rated challenges (default: casual only)\n\
+         \x20 --accept-humans     Allow human challengers (default: bots only)\n\
+         \x20 --bots-only         Decline human challengers (overrides file)\n\
+         \x20 --speeds LIST       Comma-separated speeds (e.g. blitz,rapid)\n\
          \x20 --movetime MS       Fixed think time per move (default: use clock)\n\
          \x20 --hash MB           Transposition table size (default: 16)\n\
          \x20 --no-own-book       Disable opening book (search only)\n\
@@ -78,14 +85,16 @@ fn print_help() {
          \x20 --clock-increment S Increment seconds (default: 3)\n\
          \x20 --rated             Rated game (default: casual)\n\
          \x20 --color C           white|black|random (default: random)\n\
-         \x20 --token-env VAR     Env var for API token (default: {DEFAULT_TOKEN_ENV})"
+         \x20 --token-env VAR     Env var for API token (default: {DEFAULT_TOKEN_ENV})\n\n\
+         Safe defaults: casual-only, bots-preferred, single game, no ponder.\n\
+         Rated go-live is gated (see research/tasks.md L2-06)."
     );
 }
 
 struct RunOptions {
     play: bool,
-    token_env: String,
-    accept_rated: bool,
+    config_path: Option<PathBuf>,
+    overrides: ConfigOverrides,
     movetime_ms: Option<u64>,
     hash_mb: u32,
     own_book: bool,
@@ -98,8 +107,8 @@ impl Default for RunOptions {
     fn default() -> Self {
         Self {
             play: false,
-            token_env: DEFAULT_TOKEN_ENV.into(),
-            accept_rated: false,
+            config_path: None,
+            overrides: ConfigOverrides::default(),
             movetime_ms: None,
             hash_mb: 16,
             own_book: true,
@@ -123,9 +132,35 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, String> {
                 opts.play = true;
                 i += 1;
             }
+            "--config" => {
+                opts.config_path = Some(PathBuf::from(take_value(args.get(i + 1), "--config")?));
+                i += 2;
+            }
             "--accept-rated" => {
-                opts.accept_rated = true;
+                opts.overrides.accept_rated = Some(true);
                 i += 1;
+            }
+            "--accept-humans" => {
+                opts.overrides.accept_humans = Some(true);
+                i += 1;
+            }
+            "--bots-only" => {
+                opts.overrides.accept_humans = Some(false);
+                i += 1;
+            }
+            "--speeds" => {
+                let raw = take_value(args.get(i + 1), "--speeds")?;
+                let speeds: Vec<String> = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if speeds.is_empty() {
+                    return Err("--speeds requires at least one speed".into());
+                }
+                opts.overrides.speeds = Some(speeds);
+                i += 2;
             }
             "--movetime" => {
                 opts.movetime_ms = Some(parse_num(args.get(i + 1), "--movetime")?);
@@ -152,7 +187,7 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, String> {
                 i += 2;
             }
             "--token-env" => {
-                opts.token_env = take_value(args.get(i + 1), "--token-env")?;
+                opts.overrides.token_env = Some(take_value(args.get(i + 1), "--token-env")?);
                 i += 2;
             }
             flag if flag.starts_with('-') => return Err(format!("unknown flag {flag}")),
@@ -160,6 +195,16 @@ fn parse_run_options(args: &[String]) -> Result<RunOptions, String> {
         }
     }
     Ok(opts)
+}
+
+fn resolve_config(opts: &RunOptions) -> Result<LichessConfig, LichessError> {
+    let mut cfg = if let Some(path) = &opts.config_path {
+        LichessConfig::load_from_path(path)?
+    } else {
+        LichessConfig::default()
+    };
+    cfg.apply_overrides(&opts.overrides);
+    Ok(cfg)
 }
 
 fn parse_token_env(args: &[String]) -> Result<String, String> {
@@ -188,12 +233,9 @@ fn parse_num(v: Option<&String>, flag: &str) -> Result<u64, String> {
 
 fn run_event_loop(args: &[String]) -> Result<(), LichessError> {
     let opts = parse_run_options(args).map_err(LichessError::Http)?;
-    let client = Client::from_env(&opts.token_env)?;
+    let config = resolve_config(&opts)?;
+    let client = Client::from_env(&config.token_env)?;
 
-    let config = LichessConfig {
-        accept_rated: opts.accept_rated,
-        ..Default::default()
-    };
     let mut book_cfg = crate::config::Config::load().0.book;
     book_cfg.enabled = opts.own_book;
     if let Some(path) = &opts.book_file {
@@ -223,8 +265,15 @@ fn run_event_loop(args: &[String]) -> Result<(), LichessError> {
     let account: Account = client.get_json("/api/account")?;
     let my_id = account.id.clone().unwrap_or_else(|| account.username.clone());
 
+    eprintln!("lichess: policy {}", config.summary_line());
+    eprintln!(
+        "lichess: ponder=off (searches only on our turn; UCI Ponder is not used here)"
+    );
     if opts.play {
-        eprintln!("lichess: play mode as '{my_id}' (rated={})", opts.accept_rated);
+        eprintln!(
+            "lichess: play mode as '{my_id}' (rated={} humans={})",
+            config.accept_rated, config.accept_humans
+        );
     } else {
         eprintln!("lichess: dry-run (log only; use --play to accept and play)");
     }
@@ -332,6 +381,7 @@ fn handle_event(
             );
             // Replayed gameStart means an in-flight game after reconnect; play
             // again so the per-game stream can resume (LICHESS §11.4).
+            // Single-game only until L2-07 (`max_concurrent_games` clamps to 1).
             if play {
                 eprintln!("lichess: playing game {}", game.game_id);
                 match game::play_game(client, &game.game_id, my_id, play_options.clone()) {
@@ -474,24 +524,64 @@ mod tests {
     fn run_defaults_to_dry_run() {
         let opts = parse_run_options(&[]).unwrap();
         assert!(!opts.play);
-        assert_eq!(opts.token_env, DEFAULT_TOKEN_ENV);
+        assert!(opts.overrides.token_env.is_none());
+        assert!(opts.config_path.is_none());
     }
 
     #[test]
-    fn run_parses_play_and_movetime() {
+    fn run_parses_play_config_and_policy_flags() {
         let opts = parse_run_options(&[
             "--play".into(),
+            "--config".into(),
+            "examples/lichess.toml".into(),
             "--movetime".into(),
             "500".into(),
             "--hash".into(),
             "32".into(),
             "--accept-rated".into(),
+            "--accept-humans".into(),
+            "--speeds".into(),
+            "blitz,rapid".into(),
+            "--token-env".into(),
+            "MY_TOKEN".into(),
         ])
         .unwrap();
         assert!(opts.play);
+        assert_eq!(
+            opts.config_path.as_deref(),
+            Some(std::path::Path::new("examples/lichess.toml"))
+        );
         assert_eq!(opts.movetime_ms, Some(500));
         assert_eq!(opts.hash_mb, 32);
-        assert!(opts.accept_rated);
+        assert_eq!(opts.overrides.accept_rated, Some(true));
+        assert_eq!(opts.overrides.accept_humans, Some(true));
+        assert_eq!(
+            opts.overrides.speeds.as_deref(),
+            Some(["blitz".into(), "rapid".into()].as_slice())
+        );
+        assert_eq!(opts.overrides.token_env.as_deref(), Some("MY_TOKEN"));
+    }
+
+    #[test]
+    fn bots_only_overrides_accept_humans() {
+        let opts = parse_run_options(&["--accept-humans".into(), "--bots-only".into()]).unwrap();
+        assert_eq!(opts.overrides.accept_humans, Some(false));
+    }
+
+    #[test]
+    fn resolve_config_applies_cli_over_defaults() {
+        let opts = parse_run_options(&[
+            "--accept-rated".into(),
+            "--accept-humans".into(),
+            "--token-env".into(),
+            "ALT".into(),
+        ])
+        .unwrap();
+        let cfg = resolve_config(&opts).unwrap();
+        assert!(cfg.accept_rated);
+        assert!(cfg.accept_humans);
+        assert_eq!(cfg.token_env, "ALT");
+        assert_eq!(cfg.max_concurrent_games, 1);
     }
 
     #[test]

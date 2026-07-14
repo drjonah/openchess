@@ -1,0 +1,11 @@
+{
+  "token_env": "LICHESS_TOKEN",
+  "accept_challenges": true,
+  "accept_rated": false,
+  "accept_humans": false,
+  "speeds": ["bullet", "blitz", "rapid", "classical"],
+  "variants": ["standard"],
+  "min_opponent_rating": 0,
+  "max_opponent_rating": 4000,
+  "max_concurrent_games": 1
+}
