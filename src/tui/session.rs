@@ -79,6 +79,8 @@ pub struct EngineSession {
     book_rng: BookRng,
     /// Opening-phase search floor depth (0 = off); applied on book miss (P10-04).
     opening_floor_depth: i32,
+    /// Private TT size (MB) for interactive searches (from `engine.hash_mb`).
+    hash_mb: usize,
 }
 
 impl EngineSession {
@@ -117,6 +119,7 @@ impl EngineSession {
             book: Book::from_config(&config.book),
             book_rng: BookRng::from_entropy(),
             opening_floor_depth: config.engine.opening_floor_depth as i32,
+            hash_mb: config.engine.hash_mb.max(1) as usize,
         }
     }
 
@@ -133,6 +136,7 @@ impl EngineSession {
         self.analysis_limits = config.analysis_go_limits();
         self.book = Book::from_config(&config.book);
         self.opening_floor_depth = config.engine.opening_floor_depth as i32;
+        self.hash_mb = config.engine.hash_mb.max(1) as usize;
     }
 
     pub fn set_flipped(&mut self, flipped: bool) {
@@ -690,7 +694,7 @@ impl EngineSession {
         };
         self.analysis_stm = Some(board.side_to_move());
         let search_limits = limits.to_search_limits();
-        self.analysis_live = Some(Self::spawn_search(board, search_limits));
+        self.analysis_live = Some(self.spawn_search(board, search_limits));
         if step == 0 {
             self.status = format!("Analyzing 0/{total}… · ←/→ step");
         } else {
@@ -763,9 +767,8 @@ impl EngineSession {
         self.start_eval_search(limits);
     }
 
-    fn spawn_search(board: Board, search_limits: Limits) -> LiveSearch {
-        // Fixed 16 MB TT for interactive TUI searches.
-        LiveSearch::spawn(board, search_limits, 16)
+    fn spawn_search(&self, board: Board, search_limits: Limits) -> LiveSearch {
+        LiveSearch::spawn(board, search_limits, self.hash_mb)
     }
 
     /// Probe the opening book before searching. On a hit, play the move
@@ -837,14 +840,14 @@ impl EngineSession {
         {
             search_limits.min_opening_depth = Some(self.opening_floor_depth);
         }
-        self.live = Some(Self::spawn_search(self.board.clone(), search_limits));
+        self.live = Some(self.spawn_search(self.board.clone(), search_limits));
     }
 
     fn start_eval_search(&mut self, limits: GoLimits) {
         self.eval_stm = Some(self.board.side_to_move());
         self.eval_position_key = Some(self.position_key());
         let search_limits = limits.to_search_limits();
-        self.eval_live = Some(Self::spawn_search(self.board.clone(), search_limits));
+        self.eval_live = Some(self.spawn_search(self.board.clone(), search_limits));
     }
 
     pub fn stop(&mut self) {
