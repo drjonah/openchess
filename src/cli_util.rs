@@ -1,5 +1,4 @@
-//! Small shared helpers for the hand-rolled subcommand CLIs
-//! (`arena`, `chesscom`, `lichess`).
+//! Small shared helpers for the hand-rolled subcommand CLIs (`arena`, `lichess`).
 //!
 //! These front-ends parse `Vec<String>` argument lists by hand rather than
 //! pulling in a CLI crate; the helpers here remove the copy-pasted numeric

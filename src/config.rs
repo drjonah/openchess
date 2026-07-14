@@ -3,7 +3,7 @@
 //! Common fields (`bot`, `eval`, `analysis`, `tui`) are edited from the TUI settings overlay.
 //! Advanced `engine` fields are file-only until real search/UCI lands.
 
-use crate::session::{GoLimits, PlayMode};
+use crate::session::GoLimits;
 use crate::types::Color;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -201,6 +201,61 @@ impl Default for TuiConfig {
             default_mode: DefaultPlayMode::PlayerVsPlayer,
             flip_board: false,
             show_eval_bar: false,
+        }
+    }
+}
+
+/// How a play session is driven (TUI runtime mode).
+///
+/// Lives next to [`DefaultPlayMode`] so config can map persisted defaults
+/// without depending on the TUI module. UI copy (`title` / `blurb`) is owned
+/// here because settings and the mode picker both need it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayMode {
+    PlayerVsPlayer,
+    PlayerVsBot { human: Color },
+    BotVsBot,
+    Analyze,
+}
+
+impl PlayMode {
+    pub const ALL: [PlayMode; 5] = [
+        PlayMode::PlayerVsPlayer,
+        PlayMode::PlayerVsBot {
+            human: Color::White,
+        },
+        PlayMode::PlayerVsBot {
+            human: Color::Black,
+        },
+        PlayMode::BotVsBot,
+        PlayMode::Analyze,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            PlayMode::PlayerVsPlayer => "Player vs Player",
+            PlayMode::PlayerVsBot {
+                human: Color::White,
+            } => "Player vs Bot (you White)",
+            PlayMode::PlayerVsBot {
+                human: Color::Black,
+            } => "Player vs Bot (you Black)",
+            PlayMode::BotVsBot => "Bot vs Bot",
+            PlayMode::Analyze => "Analyze",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            PlayMode::PlayerVsPlayer => "You move both colors — one move at a time",
+            PlayMode::PlayerVsBot {
+                human: Color::White,
+            } => "Enter your move; bot replies",
+            PlayMode::PlayerVsBot {
+                human: Color::Black,
+            } => "Enter your move; bot replies",
+            PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
+            PlayMode::Analyze => "Start empty or import FEN / PGN / game",
         }
     }
 }

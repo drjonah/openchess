@@ -1,7 +1,8 @@
 //! Shared engine search-session primitives used by the TUI and arena (P11-09).
 //!
-//! Owns background `search::go` spawning / live-info polling / stop-join.
-//! Does not own play modes, move input, or UI state.
+//! Owns background `search::go` spawning / live-info polling / stop-join, plus
+//! the front-end [`GoLimits`] request type. Does not own play modes, move
+//! input, or UI state — those stay in `config` / `tui`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,57 +45,6 @@ impl GoLimits {
             movetime,
             nodes: None,
             ..Default::default()
-        }
-    }
-}
-
-/// How a play session is driven (shared by the TUI and user config).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlayMode {
-    PlayerVsPlayer,
-    PlayerVsBot { human: Color },
-    BotVsBot,
-    Analyze,
-}
-
-impl PlayMode {
-    pub const ALL: [PlayMode; 5] = [
-        PlayMode::PlayerVsPlayer,
-        PlayMode::PlayerVsBot {
-            human: Color::White,
-        },
-        PlayMode::PlayerVsBot {
-            human: Color::Black,
-        },
-        PlayMode::BotVsBot,
-        PlayMode::Analyze,
-    ];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            PlayMode::PlayerVsPlayer => "Player vs Player",
-            PlayMode::PlayerVsBot {
-                human: Color::White,
-            } => "Player vs Bot (you White)",
-            PlayMode::PlayerVsBot {
-                human: Color::Black,
-            } => "Player vs Bot (you Black)",
-            PlayMode::BotVsBot => "Bot vs Bot",
-            PlayMode::Analyze => "Analyze",
-        }
-    }
-
-    pub fn blurb(self) -> &'static str {
-        match self {
-            PlayMode::PlayerVsPlayer => "You move both colors — one move at a time",
-            PlayMode::PlayerVsBot {
-                human: Color::White,
-            } => "Enter your move; bot replies",
-            PlayMode::PlayerVsBot {
-                human: Color::Black,
-            } => "Enter your move; bot replies",
-            PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
-            PlayMode::Analyze => "Start empty or import FEN / PGN / game",
         }
     }
 }

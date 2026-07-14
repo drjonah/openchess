@@ -16,7 +16,8 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 // Re-export for callers that historically imported these from `tui::session`.
-pub use crate::session::{GoLimits, PlayMode, SearchInfo, stm_score_to_white};
+pub use crate::config::PlayMode;
+pub use crate::session::{GoLimits, SearchInfo, stm_score_to_white};
 
 /// Sequential post-game analysis of an imported transcript.
 struct PostGameState {
