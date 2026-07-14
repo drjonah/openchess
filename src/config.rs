@@ -364,14 +364,6 @@ impl Config {
         to_go_limits(self.bot.depth, self.bot.movetime_ms)
     }
 
-    /// Limits for the side about to move: BvB uses per-color strength, otherwise shared bot.
-    pub fn play_go_limits(&self, mode: Option<PlayMode>, side_to_move: Color) -> GoLimits {
-        match mode {
-            Some(PlayMode::BotVsBot) => self.side_go_limits(side_to_move),
-            _ => self.go_limits(),
-        }
-    }
-
     pub fn side_go_limits(&self, side: Color) -> GoLimits {
         match side {
             Color::White => self.bot.white.to_go_limits(),
@@ -550,21 +542,17 @@ mod tests {
             }
         }"#;
         let cfg: Config = serde_json::from_str(json).unwrap();
-        let white = cfg.play_go_limits(Some(PlayMode::BotVsBot), Color::White);
-        let black = cfg.play_go_limits(Some(PlayMode::BotVsBot), Color::Black);
-        let pvb = cfg.play_go_limits(
-            Some(PlayMode::PlayerVsBot {
-                human: Color::White,
-            }),
-            Color::Black,
-        );
+        // Bot vs Bot draws per-color strength via side_go_limits...
+        let white = cfg.side_go_limits(Color::White);
+        let black = cfg.side_go_limits(Color::Black);
+        // ...while non-BvB modes use the shared bot limits.
+        let shared = cfg.go_limits();
         assert_eq!(white.depth, Some(12));
         assert_eq!(white.movetime, Some(Duration::from_millis(5000)));
         assert_eq!(black.depth, Some(2));
         assert_eq!(black.movetime, Some(Duration::from_millis(100)));
-        // PvB still uses shared bot limits, not the side strengths.
-        assert_eq!(pvb.depth, Some(8));
-        assert_eq!(pvb.movetime, Some(Duration::from_millis(450)));
+        assert_eq!(shared.depth, Some(8));
+        assert_eq!(shared.movetime, Some(Duration::from_millis(450)));
     }
 
     #[test]
