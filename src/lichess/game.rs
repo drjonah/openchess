@@ -7,6 +7,9 @@
 //! best move. Position replay is stateless (rebuilt from scratch each update),
 //! which is reconnect-safe.
 //!
+//! **Ponder is always off** on this path: we never search on the opponent's
+//! clock. (UCI `Ponder` / S2-03 is a GUI concern; Lichess stays turn-based.)
+//!
 //! The decision logic lives in [`GameDriver`] and is fully testable offline
 //! without a token; [`play_game`] wires it to a live [`Client`] stream.
 

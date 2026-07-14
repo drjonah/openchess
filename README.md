@@ -125,11 +125,52 @@ Docs: [research/nnue-training.md](research/nnue-training.md) · task **Q2-01** i
 
 ### Lichess bot (optional)
 
-Lichess support is feature-gated and CLI-only — no TUI panel. Set `LICHESS_TOKEN` in your environment (see `.env.example`); you need a [bot account](https://lichess.org/api#tag/bot).
+Lichess support is feature-gated and CLI-only — no TUI panel. You need a dedicated [bot account](https://lichess.org/api#tag/bot) and a personal API token. **Never commit the token.**
+
+#### Setup
+
+1. Register a fresh Lichess account that has **not** played any games.
+2. Create a [Personal API access token](https://lichess.org/account/oauth/token/create) with bot play + challenge scopes.
+3. Export it (see [`.env.example`](.env.example)):
+   ```bash
+   export LICHESS_TOKEN='…'   # do not put real tokens in git
+   ```
+4. One-time irreversible upgrade:
+   ```bash
+   curl -d '' https://lichess.org/api/bot/account/upgrade \
+     -H "Authorization: Bearer $LICHESS_TOKEN"
+   ```
+5. Verify:
+   ```bash
+   cargo run --features lichess -- lichess account
+   ```
+   Expect `title: BOT`.
+
+#### Smoke checklist (casual)
+
+Safe defaults: **casual only**, **bots preferred** (`accept_humans=false`), **one game**, **ponder off**. Copy [`examples/lichess.toml`](examples/lichess.toml) if you want a file-driven policy.
 
 ```bash
-cargo run --features lichess -- lichess account
+# 1) Dry-run — connect and log events; never POST
 cargo run --features lichess -- lichess run --dry-run
+# optional: --config examples/lichess.toml
+
+# 2) Play mode — accept filtered challenges and play (still casual / bots-only by default)
+cargo run --features lichess -- lichess run --play --config examples/lichess.toml
+
+# 3) Outbound casual challenge (5+3) to a known weak bot, then play in the run process above
+cargo run --features lichess -- lichess challenge <bot-username> \
+  --clock-limit 300 --clock-increment 3
 ```
 
-Details: [research/LICHESS.md](research/LICHESS.md) · Phase 2 go-live **L2** in [research/tasks.md](research/tasks.md) · Phase 1 CLI **P9** in [research/tasks-phase1.md](research/tasks-phase1.md).
+CLI flags override the config file (`--accept-rated`, `--accept-humans`, `--bots-only`, `--speeds blitz,rapid`, `--token-env VAR`). Do **not** pass `--accept-rated` until the L2-06 strength gate in [research/tasks.md](research/tasks.md).
+
+After a game finishes, PGN is written under the OpenChess cache (`…/openchess/lichess/{gameId}.pgn`). Watch the live board on lichess.org.
+
+#### Ops notes
+
+- **Ponder:** always off on the Lichess path (search only on our turn).
+- **Rated:** blocked by default; enabling it is an explicit ops decision after engine strength evidence (L2-06).
+- **Concurrency:** still one game per process until L2-07; `max_concurrent_games` in the config is clamped to `1`.
+
+Details: [research/LICHESS.md](research/LICHESS.md) · Phase 2 **L2** in [research/tasks.md](research/tasks.md) · Phase 1 CLI **P9** in [research/tasks-phase1.md](research/tasks-phase1.md).

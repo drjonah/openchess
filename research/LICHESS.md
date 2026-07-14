@@ -401,22 +401,30 @@ Reset TT between games; optionally smaller hash for bullet.
 
 ### 11.3 Config surface (minimal)
 
+Shipped in Phase 2 **L2-04/L2-05**: load TOML or JSON via `--config`; CLI flags override the file. Example files: [`examples/lichess.toml`](../examples/lichess.toml), [`examples/lichess.json`](../examples/lichess.json).
+
 ```toml
-# lichess.toml (example)
+# examples/lichess.toml (shape)
 token_env = "LICHESS_TOKEN"
 accept_challenges = true
-challenge_rated = false
-speeds = ["rapid", "blitz"]
+accept_rated = false          # stay false until L2-06 rated gate
+accept_humans = false         # bots-preferred; --accept-humans to opt in
+speeds = ["bullet", "blitz", "rapid", "classical"]
 variants = ["standard"]
-min_opponent_rating = 800
-max_opponent_rating = 2000
-
-# outbound matchmaking (optional)
-auto_challenge = false
-challenge_user = "bernstein-2ply"
-clock_limit = 300
-clock_increment = 1
+min_opponent_rating = 0
+max_opponent_rating = 4000
+max_concurrent_games = 1      # clamped to 1 until L2-07
 ```
+
+```bash
+openchess lichess run --play --config examples/lichess.toml
+# overrides (win over file): --accept-rated --accept-humans --bots-only
+#                            --speeds blitz,rapid --token-env VAR
+```
+
+**Safe defaults (no file):** casual-only, bots-preferred, single game, **ponder off** (search only on our turn — UCI `Ponder` is never used on this path).
+
+Outbound matchmaking remains CLI-only for now (`lichess challenge <user>`); `auto_challenge` / seek loops are not implemented.
 
 ### 11.4 Error handling & reconnects
 
@@ -463,10 +471,10 @@ Canonical checklist: [tasks.md § L2](./tasks.md#l2--lichess-go-live). Summary:
 | **L2-01** | Operator docs + smoke checklist | Dry-run → play from docs alone |
 | **L2-02** | Live casual game smoke | One full casual game; no illegal/time bugs |
 | **L2-03** | Reconnect + PGN verify | Forced disconnect recovers; PGN matches site |
-| **L2-04** | Ops config file + CLI overrides | File drives accept filter |
-| **L2-05** | Bots-preferred / rated-off defaults | No surprise rated human spam |
-| **L2-06** | Rated gate after strength bar | Documented SPRT/local bar before `accept_rated` |
-| **L2-07** | Concurrent games | ≥2 games stable under rate limits |
+| **L2-04** | Ops config file + CLI overrides | File drives accept filter — **done** (`--config`, examples/) |
+| **L2-05** | Bots-preferred / rated-off defaults | No surprise rated human spam — **done** |
+| **L2-06** | Rated gate after strength bar | Documented SPRT/local bar before `accept_rated` (blocked on Q2-03 + M2-02) |
+| **L2-07** | Concurrent games | ≥2 games stable under rate limits (`max_concurrent_games` prep only) |
 
 ---
 

@@ -112,19 +112,21 @@ flowchart LR
 
 ### Tasks
 
-- [ ] **L2-01** — Operator docs: token setup + smoke checklist  
+- [x] **L2-01** — Operator docs: token setup + smoke checklist  
   - **Deps:** none  
   - **Parallel-ok:** Q2-01, M2-01  
   - **Deliverable:** README / CONTRIBUTING section: create bot account, `LICHESS_TOKEN`, `lichess account`, `lichess run` (dry-run) → `--play`, challenge flow  
   - **Acceptance:** Operator can go dry-run → play from docs alone without reading research docs  
-  - **Research:** [LICHESS §4](./LICHESS.md#4-account-setup) · README Lichess section
+  - **Research:** [LICHESS §4](./LICHESS.md#4-account-setup) · README Lichess section  
+  - **Note:** README “Lichess bot” setup + smoke checklist; `.env.example` comments; examples under `examples/lichess.{toml,json}`.
 
 - [ ] **L2-02** — Live casual game smoke  
   - **Deps:** L2-01  
   - **Parallel-ok:** L2-04, Q2-01  
   - **Deliverable:** Manual (or scripted) run completing one casual (`rated=false`) game vs a weak online bot  
   - **Acceptance:** Full game completes; no illegal moves; no time forfeit caused by engine/bot bugs; note game URL in task Note  
-  - **Research:** [LICHESS §8](./LICHESS.md#8-challenges--bot-matchmaking) · closes Phase 1 P9-03 / P9-05 live notes
+  - **Research:** [LICHESS §8](./LICHESS.md#8-challenges--bot-matchmaking) · closes Phase 1 P9-03 / P9-05 live notes  
+  - **Note:** Blocked on operator bot token + live run (ops path documented in L2-01).
 
 - [ ] **L2-03** — Live reconnect + PGN verify  
   - **Deps:** L2-02  
@@ -133,33 +135,37 @@ flowchart LR
   - **Acceptance:** Reconnect survives manual kill of stream; exported PGN movetext/result match site; Note with evidence  
   - **Research:** [LICHESS §11.4](./LICHESS.md#114-error-handling--reconnects) · closes Phase 1 P9-06 / P9-07 live notes
 
-- [ ] **L2-04** — Ops config file + CLI overrides  
+- [x] **L2-04** — Ops config file + CLI overrides  
   - **Deps:** none (code) / prefer L2-01 for docs  
   - **Parallel-ok:** L2-02, L2-05, Q2-*  
   - **Deliverable:** Load Lichess accept/matchmaking policy from TOML or JSON on disk; CLI flags override file; shape matches `LichessConfig` (speeds, rated, humans, rating band, variants)  
   - **Acceptance:** Config file alone drives accept filter without recompile; unit tests cover load + override precedence  
-  - **Research:** [LICHESS §11.3](./LICHESS.md#113-config-surface-minimal) · Phase 1 note that TOML mapping was future
+  - **Research:** [LICHESS §11.3](./LICHESS.md#113-config-surface-minimal) · Phase 1 note that TOML mapping was future  
+  - **Note:** `LichessConfig::load_from_path` + `ConfigOverrides`; `--config` / `--speeds` / policy flags on `lichess run`.
 
-- [ ] **L2-05** — Default policy: bots-preferred, rated off  
+- [x] **L2-05** — Default policy: bots-preferred, rated off  
   - **Deps:** L2-04  
   - **Parallel-ok:** L2-02, L2-03  
   - **Deliverable:** Defaults decline rated until L2-06; humans opt-in (`accept_humans` default false or documented bot-preferred); speeds/variants stay standard-safe  
   - **Acceptance:** Default config declines surprise rated human challenges; bot-vs-bot casual still accepted  
-  - **Research:** [LICHESS §10](./LICHESS.md#10-restrictions--fair-play) · [LICHESS §14 #5](./LICHESS.md#14-open-questions)
+  - **Research:** [LICHESS §10](./LICHESS.md#10-restrictions--fair-play) · [LICHESS §14 #5](./LICHESS.md#14-open-questions)  
+  - **Note:** Defaults `accept_rated=false`, `accept_humans=false`; ponder off documented on Lichess path.
 
 - [ ] **L2-06** — Rated gate  
   - **Deps:** L2-02, L2-03, M2-02, Q2-03  
   - **Parallel-ok:** K2-01, F2-*  
   - **Deliverable:** Documented strength bar (local SPRT / arena smoke) before enabling `accept_rated`; config default flip + CONTRIBUTING note  
   - **Acceptance:** Checklist in CONTRIBUTING/README; default stays casual until bar met and task marked done with evidence  
-  - **Research:** [LICHESS §14 #3](./LICHESS.md#14-open-questions)
+  - **Research:** [LICHESS §14 #3](./LICHESS.md#14-open-questions)  
+  - **Note:** Blocked on Q2-03 + M2-02 (+ live L2-02/03). Defaults remain casual.
 
 - [ ] **L2-07** — Concurrent games  
   - **Deps:** L2-02, L2-03  
   - **Parallel-ok:** F2-*, K2-01 (after M2)  
   - **Deliverable:** Tokio or thread-per-game; ≥2 concurrent Lichess games under Bot API rate limits; still serializes REST where required  
   - **Acceptance:** Two concurrent casual games complete without 429 storms or illegal moves  
-  - **Research:** [LICHESS §6.4](./LICHESS.md#64-architecture-sketch-from-lichess-bot) Phase 2 · [LICHESS §14 #1](./LICHESS.md#14-open-questions)
+  - **Research:** [LICHESS §6.4](./LICHESS.md#64-architecture-sketch-from-lichess-bot) Phase 2 · [LICHESS §14 #1](./LICHESS.md#14-open-questions)  
+  - **Note:** Prep only — `max_concurrent_games` in config, clamped to `1` until this task lands.
 
 ---
 

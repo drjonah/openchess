@@ -1,0 +1,29 @@
+# Example Lichess accept / matchmaking policy for `openchess lichess run --config …`
+#
+# Copy and edit; never put API tokens in this file — use the env var named by
+# `token_env` (default LICHESS_TOKEN). See README "Lichess bot" for the smoke
+# checklist.
+#
+# CLI flags override these values. Defaults already match this safe policy when
+# no --config is passed.
+
+token_env = "LICHESS_TOKEN"
+
+# Accept incoming challenges at all.
+accept_challenges = true
+
+# Rated games stay off until L2-06 (trained net + documented strength bar).
+accept_rated = false
+
+# Prefer bot-vs-bot; set true (or pass --accept-humans) to allow human challengers.
+accept_humans = false
+
+# UltraBullet is disallowed for bots by Lichess — do not add it.
+speeds = ["bullet", "blitz", "rapid", "classical"]
+variants = ["standard"]
+
+min_opponent_rating = 0
+max_opponent_rating = 4000
+
+# Concurrent games: clamped to 1 until L2-07.
+max_concurrent_games = 1
