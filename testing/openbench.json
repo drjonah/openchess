@@ -10,12 +10,13 @@
     "binary": "./target/release/openchess"
   },
   "test": {
-    "book": "testing/books/openings.epd",
+    "book": "testing/books/8mvs_+90_+99.epd",
     "book_format": "epd",
     "time_control": "8+0.08",
     "hash": 64,
     "threads": 1,
-    "syzygy": null
+    "syzygy": null,
+    "ownbook": false
   },
   "sprt": {
     "elo0": 0,
@@ -23,5 +24,5 @@
     "alpha": 0.05,
     "beta": 0.05
   },
-  "notes": "Starter OpenBench-oriented config for P8-03. Adjust source URL and time controls for your private instance; local sprt.sh remains the primary day-to-day harness."
+  "notes": "Starter OpenBench-oriented config (P8-03 / M2-01). Default book is UHO-class 8mvs_+90_+99.epd (CC0 from official-stockfish/books). Always disable OwnBook for strength tests. Adjust source URL and time controls for your private instance; local sprt.sh remains the primary day-to-day harness."
 }

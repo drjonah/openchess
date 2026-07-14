@@ -202,12 +202,13 @@ flowchart LR
 
 ### Tasks
 
-- [ ] **M2-01** — Larger SPRT opening set  
+- [x] **M2-01** — Larger SPRT opening set  
   - **Deps:** none  
   - **Parallel-ok:** Q2-*, L2-01..L2-04  
   - **Deliverable:** Grow past smoke `testing/books/openings.epd` toward UHO / 8moves-class set; wire `testing/sprt.sh`  
   - **Acceptance:** `testing/sprt.sh` runs on the new book with `OwnBook=false`; documented in `testing/README.md`  
-  - **Research:** chesswiki Engine Testing · stockfish Fishtest opening practice
+  - **Research:** chesswiki Engine Testing · stockfish Fishtest opening practice  
+  - **Note:** Default book is `testing/books/8mvs_+90_+99.epd` (8533 UHO 8-move positions, CC0 from official-stockfish/books). Smoke keeps `--book testing/books/openings.epd`. `OwnBook=false` unchanged in `sprt.sh`.
 
 - [ ] **M2-02** — Strength-PR gate tightened  
   - **Deps:** Q2-03, M2-01  
