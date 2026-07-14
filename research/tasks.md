@@ -7,24 +7,26 @@
 > **Out of scope:** speculative ideas in [uniqueideas.md](./uniqueideas.md) — separate track.
 >
 > **Implementation language: Rust.** Module layout: [ARCHITECTURE.md](../ARCHITECTURE.md). Copy structure from research, retune with SPRT — especially after the trained net lands.
+> **NN-last schedule:** [phase2-nn-last-plan.md](./phase2-nn-last-plan.md) — do Lichess / TB / search / throughput / train plumbing **before** Q2-02/Q2-03.
 
 ---
 
 ## One-sentence model
 
-**Phase 2 = measure-and-raise Elo (trained NNUE + SPRT) while making the existing Lichess daemon production-safe for casual, then rated, play.**
+**Phase 2 = finish production Lichess + TB + search/throughput on the bootstrap leaf, then train/embed NNUE last and re-measure.**
 
 ---
 
 ## How to use this file (agent rules)
 
 1. **Own one pillar or one task ID at a time.** Do not edit another pillar’s core APIs without updating that pillar’s **Contract** section and notifying the owning agent.
-2. **Respect deps.** A task is blocked until every listed dep is marked done (`[x]`).
+2. **Respect deps.** A task is blocked until every listed dep is marked done (`[x]`). Soft “prefer Q2-03 for Elo” notes are **not** hard deps — see [phase2-nn-last-plan.md](./phase2-nn-last-plan.md).
 3. **Acceptance over vibes.** Ship only when the task’s acceptance criteria pass (SPRT, live Lichess smoke, fixed-node bench, unit fixtures).
-4. **One strength change at a time.** After Q2 lands a trained net, retune/search/TB changes go through SPRT individually.
+4. **One strength change at a time.** Functional search/TB/SIMD may land before the trained net behind toggles/feature flags; **Elo claims and margin retunes** after Q2-03 go through SPRT individually.
 5. **Mark progress in this file.** Flip `- [ ]` → `- [x]` and note the PR/commit if useful.
 6. **Link research.** Each task cites the justifying section; read it before implementing.
 7. **Do not re-implement Phase 1.** Book, arena, Lichess CLI skeleton, and search selectivity already shipped — see [tasks-phase1.md](./tasks-phase1.md).
+8. **NN last.** Do not start Q2-02 until Wave A–E in [phase2-nn-last-plan.md](./phase2-nn-last-plan.md) are done or explicitly deferred in a task Note.
 
 ### Task entry format
 
@@ -43,19 +45,23 @@
 
 ```mermaid
 flowchart LR
-  L2[L2_LichessGoLive]
-  Q2[Q2_TrainedEval]
-  M2[M2_Measurement]
-  K2[K2_EndgameTB]
-  F2[F2_Throughput]
-  S2[S2_SearchPolish]
+  L2live[L2_02_03_07]
+  K2[K2_Syzygy]
+  S2[S2_NMP_Ponder]
+  F2[F2_PGO_SIMD]
+  Q2prep[Q2_plumbing]
+  Q2train[Q2_02_03_LAST]
+  M2post[M2_02_03]
+  L2rated[L2_06_rated]
 
-  L2 --> Q2
-  Q2 --> M2
-  M2 --> K2
-  M2 --> S2
-  Q2 --> F2
-  M2 --> L2Rated[L2_rated_gate]
+  L2live --> Q2train
+  K2 --> Q2train
+  S2 --> Q2train
+  F2 --> Q2train
+  Q2prep --> Q2train
+  Q2train --> M2post
+  Q2train --> L2rated
+  M2post --> L2rated
 ```
 
 | Pillar | Owns | Does not own |
@@ -69,15 +75,17 @@ flowchart LR
 
 ---
 
-## Critical path
+## Critical path (NN last)
 
-1. **Lichess live smoke** (L2-01..L2-03) — can start immediately; needs a bot token.
-2. **Trained NNUE** (Q2-01..Q2-03) — main Elo lever; replace material-distilled bootstrap.
-3. **SPRT at scale** (M2-01..M2-02) — real openings; OwnBook false.
-4. **Post-net retune / Syzygy** (M2-03, K2-01, S2-*) — one change at a time.
-5. **Throughput** (F2-01..F2-02) — after the shipped net is stable.
-6. **Rated Lichess** (L2-06) — only after the documented strength bar.
-7. **Concurrent Lichess games** (L2-07) — after single-game live stability.
+1. **Lichess live** (L2-02 → L2-03 → L2-07) — needs bot token; bootstrap net OK.
+2. **Syzygy** (K2-01) — implement now; Elo claim after embed.
+3. **Search polish** (S2-01, S2-03) — toggles; Lichess ponder-off; re-measure after embed.
+4. **Throughput** (F2-01, F2-02) — vs bootstrap; **freeze `OCNNv002`**.
+5. **Train plumbing** (feature parity, exporter, EvalFile SPRT) — see [phase2-nn-last-plan.md](./phase2-nn-last-plan.md) Wave E.
+6. **LAST — trained NNUE** (Q2-02 → Q2-03).
+7. **Post-net only** (M2-02, M2-03, L2-06) — one strength change at a time.
+
+Done already: L2-01/04/05, Q2-01, M2-01, S2-02.
 
 ---
 
@@ -85,12 +93,13 @@ flowchart LR
 
 | Now working on | Can also run |
 |---|---|
-| L2-01..L2-05 (docs/ops/smoke) | Q2-01 data pipeline design |
-| Q2-01 / Q2-02 (train) | L2-01..L2-04; M2-01 book prep |
-| Q2-03 ship net | M2-01; F2 design |
-| M2-03 retune | K2-01 Syzygy; **not** another retune at once |
-| F2-01 / F2-02 | L2-05 policy docs; **not** Q2 net architecture churn |
-| L2-07 concurrent games | Only after L2-02 and L2-03 |
+| L2-02 live smoke | K2-01; Q2 plumbing (parity/exporter); F2 design |
+| L2-03 / L2-07 | K2-01; S2-01 or S2-03; F2-01/02 |
+| K2-01 Syzygy | L2-*; S2-03; F2-*; Q2 plumbing — **not** another search margin PR |
+| S2-01 NMP verify | L2-*; K2; F2 — **not** S2-03 in the same strength PR |
+| F2-01 / F2-02 | L2-*; K2; Q2 plumbing — **no** `OCNNv002` topology churn |
+| Q2-02 / Q2-03 (last) | Docs only; no parallel strength merges |
+| M2-03 retune | K2 re-measure; **not** another retune at once |
 
 ---
 
@@ -161,11 +170,11 @@ flowchart LR
 
 - [ ] **L2-07** — Concurrent games  
   - **Deps:** L2-02, L2-03  
-  - **Parallel-ok:** F2-*, K2-01 (after M2)  
+  - **Parallel-ok:** F2-*, K2-01, S2-*, Q2 plumbing  
   - **Deliverable:** Tokio or thread-per-game; ≥2 concurrent Lichess games under Bot API rate limits; still serializes REST where required  
   - **Acceptance:** Two concurrent casual games complete without 429 storms or illegal moves  
   - **Research:** [LICHESS §6.4](./LICHESS.md#64-architecture-sketch-from-lichess-bot) Phase 2 · [LICHESS §14 #1](./LICHESS.md#14-open-questions)  
-  - **Note:** Prep only — `max_concurrent_games` in config, clamped to `1` until this task lands.
+  - **Note:** Prep only — `max_concurrent_games` in config, clamped to `1` until this task lands. Schedule **before** Q2-02 per [phase2-nn-last-plan.md](./phase2-nn-last-plan.md).
 
 ---
 
@@ -186,11 +195,12 @@ flowchart LR
   - **Note:** Bullet text (`FEN \| score \| result`) via `openchess nnue-data`; docs in [nnue-training.md](./nnue-training.md); fixture `./tools/nnue-data/run_fixture.sh`. Branch `phase2/q2-01-training-data`.
 
 - [ ] **Q2-02** — Train successor net  
-  - **Deps:** Q2-01  
-  - **Parallel-ok:** M2-01, L2-* smoke  
+  - **Deps:** Q2-01; prefer Wave A–E in [phase2-nn-last-plan.md](./phase2-nn-last-plan.md) done first (NN last)  
+  - **Parallel-ok:** docs only while training — no parallel strength merges  
   - **Deliverable:** Trained net loads via existing `EvalFile` and/or embed as `OCNNv00x` successor to bootstrap  
   - **Acceptance:** Startpos + tactical smoke stable; beats bootstrap on fixed-node bench **or** wins a local SPRT vs bootstrap  
-  - **Research:** Phase 1 P6-05/P6-06 · stockfish Network::evaluate
+  - **Research:** Phase 1 P6-05/P6-06 · stockfish Network::evaluate  
+  - **Note:** **Do not start until** feature parity + exporter + EvalFile harness (Wave E) are ready.
 
 - [ ] **Q2-03** — Ship default embedded net  
   - **Deps:** Q2-02  
@@ -242,28 +252,30 @@ flowchart LR
 ### Tasks
 
 - [ ] **K2-01** — Syzygy WDL + DTZ  
-  - **Deps:** M2-01 (prefer trained net Q2-03 first when measuring Elo)  
-  - **Parallel-ok:** M2-03, F2-*, L2-05  
+  - **Deps:** M2-01 (book for later measurement)  
+  - **Parallel-ok:** L2-02..L2-07, S2-03, F2-*, Q2 plumbing  
   - **Deliverable:** WDL probe in search; DTZ at root; `SyzygyPath` UCI/option; skip heavy probes in qsearch  
   - **Acceptance:** Known 5-man wins return TB scores/mate bounds; root ranking prefers DTZ progress  
-  - **Research:** chesswiki Syzygy Bases · Phase 1 P8-02
+  - **Research:** chesswiki Syzygy Bases · Phase 1 P8-02  
+  - **Note:** **Implement before Q2-02** (NN-last). Elo/SPRT claims prefer after Q2-03; feature-gate; no TB download in default CI.
 
 ---
 
 ## S2 — Search polish
 
-**Contract:** Small correctness/strength polish on the existing PVS stack. Prefer measuring after Q2-03 so constants match the shipped net. Do not stack multiple unmeasured changes.
+**Contract:** Small correctness/strength polish on the existing PVS stack. Under NN-last, implement NMP verify / ponder **before** training; re-measure Elo after Q2-03. Do not stack multiple unmeasured strength claims in one PR.
 
-**Research:** chesswiki NMP / SEE · Phase 1 P5-01 Note · Phase 1 P1-08 Note · chesswiki Phase D ponder
+**Research:** chesswiki NMP / SEE · Phase 1 P5-01 Note · Phase 1 P1-08 Note · chesswiki Phase D ponder · [phase2-nn-last-plan.md](./phase2-nn-last-plan.md)
 
 ### Tasks
 
 - [ ] **S2-01** — NMP verification search  
-  - **Deps:** Q2-03, M2-01  
-  - **Parallel-ok:** S2-02, K2-01  
+  - **Deps:** M2-01  
+  - **Parallel-ok:** L2-*, K2-01, F2-*; not S2-03 in the same strength PR  
   - **Deliverable:** Verification re-search behind NMP fail-high; feature toggle  
-  - **Acceptance:** Toggleable; SPRT or fixed-node smoke vs baseline documents node/Elo effect  
-  - **Research:** chesswiki NMP · Phase 1 P5-01 (no verification yet)
+  - **Acceptance:** Toggleable; fixed-node smoke vs baseline documents node effect; **re-SPRT after Q2-03** if claiming Elo  
+  - **Research:** chesswiki NMP · Phase 1 P5-01 (no verification yet)  
+  - **Note:** **Code before Q2-02** (NN-last). Bootstrap measurement is fine for merge; retune narrative after embed.
 
 - [x] **S2-02** — SEE recapture promotions  
   - **Deps:** none  
@@ -274,35 +286,38 @@ flowchart LR
   - **Note:** Done — pawn recaptures onto the promo rank get queen-promo bonus; `tests/see.rs` covers winning/losing signs.
 
 - [ ] **S2-03** — Optional ponder  
-  - **Deps:** Q2-03  
-  - **Parallel-ok:** F2-*, L2-06  
+  - **Deps:** none (UCI product surface)  
+  - **Parallel-ok:** F2-*, L2-*, K2-01; not S2-01 in the same strength PR  
   - **Deliverable:** UCI `Ponder`; legal ponderhit path; **off by default** for Lichess daemon  
   - **Acceptance:** GUI ponderhit plays legal move; Lichess path remains ponder-off  
-  - **Research:** chesswiki Phase D · stockfish ponder
+  - **Research:** chesswiki Phase D · stockfish ponder  
+  - **Note:** **Code before Q2-02** (NN-last). No dependency on trained weights.
 
 ---
 
 ## F2 — Throughput
 
-**Contract:** Raise NPS without changing chess semantics. Carry-forward of Phase 1 **P8-04**. Prefer after Q2-03 so SIMD targets the shipped net.
+**Contract:** Raise NPS without changing chess semantics. Carry-forward of Phase 1 **P8-04**. Under NN-last, implement against bootstrap while **freezing `OCNNv002`**; re-check NPS after Q2-03 if needed.
 
-**Research:** reckless release profile / simd · stockfish Makefile PGO · Phase 1 P8-04
+**Research:** reckless release profile / simd · stockfish Makefile PGO · Phase 1 P8-04 · [phase2-nn-last-plan.md](./phase2-nn-last-plan.md)
 
 ### Tasks
 
 - [ ] **F2-01** — PGO build  
-  - **Deps:** Q2-03  
-  - **Parallel-ok:** F2-02, L2-05, K2-01  
+  - **Deps:** none (freeze net format)  
+  - **Parallel-ok:** F2-02, L2-*, K2-01, Q2 plumbing  
   - **Deliverable:** Profile-guided / documented release build instructions; CI or docs entry  
   - **Acceptance:** Documented release profile; measurable NPS uplift vs non-PGO on bench  
-  - **Research:** Phase 1 P8-04 · stockfish PGO
+  - **Research:** Phase 1 P8-04 · stockfish PGO  
+  - **Note:** **Before Q2-02.** Do not change topology while measuring.
 
 - [ ] **F2-02** — SIMD NNUE forward  
-  - **Deps:** Q2-03  
-  - **Parallel-ok:** F2-01  
+  - **Deps:** none (must match current `OCNNv002` / L1=256)  
+  - **Parallel-ok:** F2-01, L2-*, K2-01  
   - **Deliverable:** SIMD path for NNUE forward on target CPU; scalar fallback  
   - **Acceptance:** Correct vs scalar on fixture positions; NPS uplift on `bench`  
-  - **Research:** Phase 1 P8-04 · reckless simd · stockfish NNUE SIMD
+  - **Research:** Phase 1 P8-04 · reckless simd · stockfish NNUE SIMD  
+  - **Note:** **Before Q2-02.** Coordinate with Q2 if magic/L1 would change — prefer freeze.
 
 ---
 
