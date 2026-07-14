@@ -13,6 +13,92 @@ use crate::search::{self, Limits, SearchResult};
 use crate::transposition::TranspositionTable;
 use crate::types::Color;
 
+/// Default movetime applied when a [`GoLimits`] specifies neither depth nor
+/// movetime, so an otherwise-empty request still terminates promptly.
+const DEFAULT_GO_MOVETIME: Duration = Duration::from_millis(400);
+
+/// Depth / movetime request shared by the TUI, config, and arena front-ends.
+///
+/// This is the front-end vocabulary for "how hard to think"; it is lowered to
+/// the engine's [`Limits`] via [`GoLimits::to_search_limits`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GoLimits {
+    pub depth: Option<u32>,
+    pub movetime: Option<Duration>,
+}
+
+impl GoLimits {
+    /// Lower a front-end request to engine [`Limits`].
+    ///
+    /// A depth-only request stays depth-only (no implicit movetime cap); any
+    /// other request keeps its movetime, falling back to [`DEFAULT_GO_MOVETIME`]
+    /// when none was given.
+    pub fn to_search_limits(self) -> Limits {
+        let movetime = if self.depth.is_some() && self.movetime.is_none() {
+            None
+        } else {
+            self.movetime.or(Some(DEFAULT_GO_MOVETIME))
+        };
+        Limits {
+            depth: self.depth.map(|d| d as i32),
+            movetime,
+            nodes: None,
+            ..Default::default()
+        }
+    }
+}
+
+/// How a play session is driven (shared by the TUI and user config).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayMode {
+    PlayerVsPlayer,
+    PlayerVsBot { human: Color },
+    BotVsBot,
+    Analyze,
+}
+
+impl PlayMode {
+    pub const ALL: [PlayMode; 5] = [
+        PlayMode::PlayerVsPlayer,
+        PlayMode::PlayerVsBot {
+            human: Color::White,
+        },
+        PlayMode::PlayerVsBot {
+            human: Color::Black,
+        },
+        PlayMode::BotVsBot,
+        PlayMode::Analyze,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            PlayMode::PlayerVsPlayer => "Player vs Player",
+            PlayMode::PlayerVsBot {
+                human: Color::White,
+            } => "Player vs Bot (you White)",
+            PlayMode::PlayerVsBot {
+                human: Color::Black,
+            } => "Player vs Bot (you Black)",
+            PlayMode::BotVsBot => "Bot vs Bot",
+            PlayMode::Analyze => "Analyze",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            PlayMode::PlayerVsPlayer => "You move both colors — one move at a time",
+            PlayMode::PlayerVsBot {
+                human: Color::White,
+            } => "Enter your move; bot replies",
+            PlayMode::PlayerVsBot {
+                human: Color::Black,
+            } => "Enter your move; bot replies",
+            PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
+            PlayMode::Analyze => "Start empty or import FEN / PGN / game",
+        }
+    }
+}
+
 /// Compact search stats published to the UI / inspector.
 #[derive(Clone, Debug, Default)]
 pub struct SearchInfo {

@@ -16,64 +16,8 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-// Re-export for callers that historically imported from `tui::session`.
-pub use crate::session::{SearchInfo, stm_score_to_white};
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct GoLimits {
-    pub depth: Option<u32>,
-    pub movetime: Option<Duration>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlayMode {
-    PlayerVsPlayer,
-    PlayerVsBot { human: Color },
-    BotVsBot,
-    Analyze,
-}
-
-impl PlayMode {
-    pub const ALL: [PlayMode; 5] = [
-        PlayMode::PlayerVsPlayer,
-        PlayMode::PlayerVsBot {
-            human: Color::White,
-        },
-        PlayMode::PlayerVsBot {
-            human: Color::Black,
-        },
-        PlayMode::BotVsBot,
-        PlayMode::Analyze,
-    ];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            PlayMode::PlayerVsPlayer => "Player vs Player",
-            PlayMode::PlayerVsBot {
-                human: Color::White,
-            } => "Player vs Bot (you White)",
-            PlayMode::PlayerVsBot {
-                human: Color::Black,
-            } => "Player vs Bot (you Black)",
-            PlayMode::BotVsBot => "Bot vs Bot",
-            PlayMode::Analyze => "Analyze",
-        }
-    }
-
-    pub fn blurb(self) -> &'static str {
-        match self {
-            PlayMode::PlayerVsPlayer => "You move both colors — one move at a time",
-            PlayMode::PlayerVsBot {
-                human: Color::White,
-            } => "Enter your move; bot replies",
-            PlayMode::PlayerVsBot {
-                human: Color::Black,
-            } => "Enter your move; bot replies",
-            PlayMode::BotVsBot => "Engine plays both sides (per-color strength)",
-            PlayMode::Analyze => "Start empty or import FEN / PGN / game",
-        }
-    }
-}
+// Re-export for callers that historically imported these from `tui::session`.
+pub use crate::session::{GoLimits, PlayMode, SearchInfo, stm_score_to_white};
 
 /// Sequential post-game analysis of an imported transcript.
 struct PostGameState {
@@ -755,7 +699,7 @@ impl EngineSession {
             }
         };
         self.analysis_stm = Some(board.side_to_move());
-        let search_limits = Self::limits_to_search(limits);
+        let search_limits = limits.to_search_limits();
         self.analysis_live = Some(Self::spawn_search(board, search_limits));
         if step == 0 {
             self.status = format!("Analyzing 0/{total}… · ←/→ step");
@@ -829,25 +773,6 @@ impl EngineSession {
         self.start_eval_search(limits);
     }
 
-    fn limits_to_search(limits: GoLimits) -> Limits {
-        // If only depth is set, don't also force a short movetime.
-        if limits.depth.is_some() && limits.movetime.is_none() {
-            Limits {
-                depth: limits.depth.map(|d| d as i32),
-                movetime: None,
-                nodes: None,
-                ..Default::default()
-            }
-        } else {
-            Limits {
-                depth: limits.depth.map(|d| d as i32),
-                movetime: limits.movetime.or(Some(Duration::from_millis(400))),
-                nodes: None,
-                ..Default::default()
-            }
-        }
-    }
-
     fn spawn_search(board: Board, search_limits: Limits) -> LiveSearch {
         // Fixed 16 MB TT for interactive TUI searches.
         LiveSearch::spawn(board, search_limits, 16)
@@ -914,7 +839,7 @@ impl EngineSession {
             "Analyzing (will not move)…".into()
         };
 
-        let mut search_limits = Self::limits_to_search(limits);
+        let mut search_limits = limits.to_search_limits();
         // Opening-phase floor: on a book miss early in the game, ensure the bot
         // searches at least to the floor depth before the time abort (P10-04).
         if self.opening_floor_depth > 0
@@ -928,7 +853,7 @@ impl EngineSession {
     fn start_eval_search(&mut self, limits: GoLimits) {
         self.eval_stm = Some(self.board.side_to_move());
         self.eval_position_key = Some(self.position_key());
-        let search_limits = Self::limits_to_search(limits);
+        let search_limits = limits.to_search_limits();
         self.eval_live = Some(Self::spawn_search(self.board.clone(), search_limits));
     }
 

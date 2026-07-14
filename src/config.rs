@@ -3,7 +3,7 @@
 //! Common fields (`bot`, `eval`, `analysis`, `tui`) are edited from the TUI settings overlay.
 //! Advanced `engine` fields are file-only until real search/UCI lands.
 
-use crate::tui::session::{GoLimits, PlayMode};
+use crate::session::{GoLimits, PlayMode};
 use crate::types::Color;
 use serde::{Deserialize, Serialize};
 use std::fs;
