@@ -171,12 +171,13 @@ flowchart LR
 
 ### Tasks
 
-- [ ] **Q2-01** — Training data pipeline  
+- [x] **Q2-01** — Training data pipeline  
   - **Deps:** none  
   - **Parallel-ok:** L2-01..L2-04, M2-01  
   - **Deliverable:** Doc + tool path producing Bullet-ready (or agreed format) quiet-position / self-play data; small fixture dataset builds end-to-end  
   - **Acceptance:** Repro steps in `research/` or `tools/`; fixture run completes on a developer machine  
-  - **Research:** reckless / stockfish NNUE training notes · chesswiki NNUE
+  - **Research:** reckless / stockfish NNUE training notes · chesswiki NNUE  
+  - **Note:** Bullet text (`FEN \| score \| result`) via `openchess nnue-data`; docs in [nnue-training.md](./nnue-training.md); fixture `./tools/nnue-data/run_fixture.sh`. Branch `phase2/q2-01-training-data`.
 
 - [ ] **Q2-02** — Train successor net  
   - **Deps:** Q2-01  
@@ -308,6 +309,7 @@ flowchart LR
 | [reckless.md](./reckless.md) | Rust SF-family reference |
 | [stockfish.md](./stockfish.md) | Canonical C++ layout, NNUE, Fishtest |
 | [ARENA.md](./ARENA.md) | Local Bot-vs-Bot lab (shipped in Phase 1) |
+| [nnue-training.md](./nnue-training.md) | Q2 Bullet data pipeline + train handoff |
 | [uniqueideas.md](./uniqueideas.md) | Non-goals for this board |
 
 ---
