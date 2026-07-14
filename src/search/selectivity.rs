@@ -619,7 +619,7 @@ mod tests {
         let prev = NMP_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_null_move(
             &mut board,
@@ -642,7 +642,7 @@ mod tests {
         let mut board = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
         assert_eq!(board.non_pawn_material(Color::White), 0);
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_null_move(
             &mut board,
@@ -663,7 +663,7 @@ mod tests {
         init();
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_null_move(
             &mut board,
@@ -712,7 +712,7 @@ mod tests {
         init();
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_razoring(
             &mut board,
@@ -736,7 +736,7 @@ mod tests {
         RAZORING_ENABLED.store(true, Ordering::Relaxed);
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         let score = try_razoring(
             &mut board,
@@ -760,7 +760,7 @@ mod tests {
         let prev = RAZORING_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         assert!(try_razoring(
             &mut board,
@@ -785,7 +785,7 @@ mod tests {
         let prev = SINGULAR_ENABLED.swap(false, Ordering::Relaxed);
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         let result = try_singular(
             &mut board,
@@ -810,7 +810,7 @@ mod tests {
         init();
         let mut board = Board::startpos();
         let mut td = ThreadData::default();
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let stop = AtomicBool::new(false);
         // Shallow
         assert_eq!(
