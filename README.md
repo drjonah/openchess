@@ -112,6 +112,17 @@ cargo run --release -- arena watch --games 4 --depth 6 --concurrency 2
 
 Design notes: [research/ARENA.md](research/ARENA.md) · Phase 1 tasks **P11** in [research/tasks-phase1.md](research/tasks-phase1.md).
 
+### NNUE training data (Phase 2 Q2-01)
+
+Produce Bullet-ready quiet-position labels (`FEN | score | result`) for later training (Q2-02):
+
+```bash
+./tools/nnue-data/run_fixture.sh
+# or: cargo run -- nnue-data fixture
+```
+
+Docs: [research/nnue-training.md](research/nnue-training.md) · task **Q2-01** in [research/tasks.md](research/tasks.md).
+
 ### Lichess bot (optional)
 
 Lichess support is feature-gated and CLI-only — no TUI panel. Set `LICHESS_TOKEN` in your environment (see `.env.example`); you need a [bot account](https://lichess.org/api#tag/bot).

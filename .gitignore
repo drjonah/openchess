@@ -25,3 +25,6 @@ target
 
 # Local SPRT output
 testing/last-sprt.pgn
+
+# NNUE training-data generator output (Q2-01)
+tools/nnue-data/out/
