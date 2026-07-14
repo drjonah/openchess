@@ -318,12 +318,7 @@ impl GameSlot {
             return Vec::new();
         };
 
-        let live = job.snapshot_live();
-        self.last_info.depth = live.depth;
-        self.last_info.score_cp = live.score_cp;
-        self.last_info.nodes = live.nodes;
-        self.last_info.time = live.time;
-        self.last_info.pv = live.pv;
+        self.last_info.apply_live(&job.snapshot_live());
         self.last_info.thinking = true;
 
         if !job.is_ready() {

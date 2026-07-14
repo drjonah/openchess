@@ -111,6 +111,20 @@ pub struct SearchInfo {
     pub bestmove: Option<String>,
 }
 
+impl SearchInfo {
+    /// Overlay the latest per-iteration snapshot from a running worker.
+    ///
+    /// Copies only the streamed search stats; the lifecycle fields (`thinking`,
+    /// `bestmove`) are owned by the caller and left untouched.
+    pub fn apply_live(&mut self, live: &LiveInfo) {
+        self.depth = live.depth;
+        self.score_cp = live.score_cp;
+        self.nodes = live.nodes;
+        self.time = live.time;
+        self.pv = live.pv.clone();
+    }
+}
+
 /// Per-iteration search stats shared from the worker thread.
 #[derive(Clone, Debug, Default)]
 pub struct LiveInfo {
@@ -122,11 +136,16 @@ pub struct LiveInfo {
 }
 
 /// Background search job started by [`LiveSearch::spawn`].
+///
+/// Internals are private on purpose: drive the job through
+/// [`request_stop`](Self::request_stop), [`shutdown`](Self::shutdown),
+/// [`is_ready`](Self::is_ready), [`snapshot_live`](Self::snapshot_live), and
+/// [`take_result`](Self::take_result) rather than poking the shared state.
 pub struct LiveSearch {
-    pub stop: Arc<AtomicBool>,
-    pub result: Arc<Mutex<Option<SearchResult>>>,
-    pub live_info: Arc<Mutex<LiveInfo>>,
-    pub handle: Option<JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<SearchResult>>>,
+    live_info: Arc<Mutex<LiveInfo>>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl LiveSearch {

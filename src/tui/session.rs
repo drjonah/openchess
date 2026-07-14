@@ -13,7 +13,6 @@ use crate::search::{Limits, SearchResult};
 use crate::session::LiveSearch;
 use crate::types::{Color, Move, Piece, PieceType, Square};
 use std::str::FromStr;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 // Re-export for callers that historically imported these from `tui::session`.
@@ -364,7 +363,7 @@ impl EngineSession {
     fn live_eval_worker_score(&self) -> Option<i32> {
         let stm = self.eval_stm?;
         let live = self.eval_live.as_ref()?;
-        let snap = live.live_info.lock().ok()?;
+        let snap = live.snapshot_live();
         if snap.depth > 0 || snap.nodes > 0 {
             Some(stm_score_to_white(snap.score_cp, stm))
         } else {
@@ -628,10 +627,7 @@ impl EngineSession {
 
     fn stop_thinking_quiet(&mut self) {
         if let Some(mut live) = self.live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
+            live.shutdown();
         }
         self.info.thinking = false;
         self.go_started = None;
@@ -641,10 +637,7 @@ impl EngineSession {
 
     fn stop_eval_quiet(&mut self) {
         if let Some(mut live) = self.eval_live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
+            live.shutdown();
         }
         self.eval_stm = None;
         self.eval_position_key = None;
@@ -652,10 +645,7 @@ impl EngineSession {
 
     fn stop_post_game_quiet(&mut self) {
         if let Some(mut live) = self.analysis_live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
+            live.shutdown();
         }
         self.analysis_stm = None;
         self.post_game = None;
@@ -860,7 +850,7 @@ impl EngineSession {
     pub fn stop(&mut self) {
         if self.info.thinking {
             if let Some(live) = &self.live {
-                live.stop.store(true, Ordering::Relaxed);
+                live.request_stop();
             }
             self.finish_search(true);
         }
@@ -882,28 +872,22 @@ impl EngineSession {
         self.info.time = started.elapsed();
 
         if let Some(live) = self.live.as_ref() {
-            if let Ok(snap) = live.live_info.lock() {
-                if snap.depth > 0 || snap.nodes > 0 || !snap.pv.is_empty() {
-                    self.info.depth = snap.depth;
-                    self.info.score_cp = snap.score_cp;
-                    self.info.nodes = snap.nodes;
-                    // Never stream PV during bot play.
-                    if self.show_engine_hints() {
-                        self.info.pv = snap.pv.clone();
-                    } else {
-                        self.info.pv.clear();
-                    }
-                }
+            let snap = live.snapshot_live();
+            if snap.depth > 0 || snap.nodes > 0 || !snap.pv.is_empty() {
+                self.info.depth = snap.depth;
+                self.info.score_cp = snap.score_cp;
+                self.info.nodes = snap.nodes;
+                // Keep the wall-clock live timer (info.time) set above; never
+                // stream the PV during bot play.
+                self.info.pv = if self.show_engine_hints() {
+                    snap.pv
+                } else {
+                    String::new()
+                };
             }
         }
 
-        let ready = self
-            .live
-            .as_ref()
-            .and_then(|l| l.result.lock().ok())
-            .map(|g| g.is_some())
-            .unwrap_or(false);
-
+        let ready = self.live.as_ref().map(LiveSearch::is_ready).unwrap_or(false);
         if ready {
             self.finish_search(false);
         }
@@ -917,8 +901,7 @@ impl EngineSession {
         let ready = self
             .eval_live
             .as_ref()
-            .and_then(|l| l.result.lock().ok())
-            .map(|g| g.is_some())
+            .map(LiveSearch::is_ready)
             .unwrap_or(false);
 
         if !ready {
@@ -927,16 +910,7 @@ impl EngineSession {
 
         let key = self.eval_position_key;
         let stm = self.eval_stm;
-        let mut live = self.eval_live.take().unwrap();
-        live.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = live.handle.take() {
-            let _ = handle.join();
-        }
-        let result = live
-            .result
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take());
+        let result = self.eval_live.take().unwrap().take_result();
 
         self.eval_stm = None;
         self.eval_position_key = None;
@@ -965,8 +939,7 @@ impl EngineSession {
         let ready = self
             .analysis_live
             .as_ref()
-            .and_then(|l| l.result.lock().ok())
-            .map(|g| g.is_some())
+            .map(LiveSearch::is_ready)
             .unwrap_or(false);
 
         if !ready {
@@ -974,12 +947,7 @@ impl EngineSession {
         }
 
         let stm = self.analysis_stm;
-        let mut live = self.analysis_live.take().unwrap();
-        live.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = live.handle.take() {
-            let _ = handle.join();
-        }
-        let result = live.result.lock().ok().and_then(|mut g| g.take());
+        let result = self.analysis_live.take().unwrap().take_result();
         self.analysis_stm = None;
 
         let Some(result) = result else {
@@ -1067,15 +1035,7 @@ impl EngineSession {
 
     fn finish_search(&mut self, stopped: bool) {
         if let Some(mut live) = self.live.take() {
-            live.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = live.handle.take() {
-                let _ = handle.join();
-            }
-            let result = live
-                .result
-                .lock()
-                .ok()
-                .and_then(|mut g| g.take());
+            let result = live.take_result();
             self.apply_search_result(result, stopped);
         } else {
             self.info.thinking = false;
