@@ -36,6 +36,40 @@ const MAX_THREADS: u32 = 512;
 const MIN_ELO: u32 = 800;
 const MAX_ELO: u32 = 3000;
 
+/// Clamp a search depth into the supported `[MIN_DEPTH, MAX_DEPTH]` range.
+fn clamp_depth(depth: u32) -> u32 {
+    depth.clamp(MIN_DEPTH, MAX_DEPTH)
+}
+
+/// Clamp a movetime into range, keeping it at or above `floor_ms`.
+///
+/// Non-clock-critical limits (eval / analysis) pass `MIN_MOVETIME_MS`; live/bot
+/// limits pass the overhead-aware [`movetime_floor_ms`] (P7-05).
+fn clamp_movetime(movetime_ms: u64, floor_ms: u64) -> u64 {
+    movetime_ms
+        .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS)
+        .max(floor_ms)
+}
+
+/// Nudge a depth by `delta`, staying within range.
+fn adjust_depth(depth: u32, delta: i32) -> u32 {
+    (depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32) as u32
+}
+
+/// Nudge a movetime by `delta_ms`, staying within range and at/above `floor_ms`.
+fn adjust_movetime(movetime_ms: u64, delta_ms: i64, floor_ms: u64) -> u64 {
+    let floor = floor_ms.max(MIN_MOVETIME_MS);
+    (movetime_ms as i64 + delta_ms).clamp(floor as i64, MAX_MOVETIME_MS as i64) as u64
+}
+
+/// Build a [`GoLimits`] from a depth / movetime pair.
+fn to_go_limits(depth: u32, movetime_ms: u64) -> GoLimits {
+    GoLimits {
+        depth: Some(depth),
+        movetime: Some(Duration::from_millis(movetime_ms)),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -102,30 +136,20 @@ impl Default for SideStrength {
 
 impl SideStrength {
     fn to_go_limits(&self) -> GoLimits {
-        GoLimits {
-            depth: Some(self.depth),
-            movetime: Some(Duration::from_millis(self.movetime_ms)),
-        }
+        to_go_limits(self.depth, self.movetime_ms)
     }
 
     fn clamp_with_floor(&mut self, floor_ms: u64) {
-        self.depth = self.depth.clamp(MIN_DEPTH, MAX_DEPTH);
-        self.movetime_ms = self
-            .movetime_ms
-            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS)
-            .max(floor_ms);
+        self.depth = clamp_depth(self.depth);
+        self.movetime_ms = clamp_movetime(self.movetime_ms, floor_ms);
     }
 
     fn adjust_depth(&mut self, delta: i32) {
-        let next = (self.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
-        self.depth = next as u32;
+        self.depth = adjust_depth(self.depth, delta);
     }
 
     fn adjust_movetime(&mut self, delta_ms: i64, floor_ms: u64) {
-        let floor = floor_ms.max(MIN_MOVETIME_MS);
-        let next = (self.movetime_ms as i64 + delta_ms)
-            .clamp(floor as i64, MAX_MOVETIME_MS as i64);
-        self.movetime_ms = next as u64;
+        self.movetime_ms = adjust_movetime(self.movetime_ms, delta_ms, floor_ms);
     }
 }
 
@@ -337,10 +361,7 @@ impl Config {
     }
 
     pub fn go_limits(&self) -> GoLimits {
-        GoLimits {
-            depth: Some(self.bot.depth),
-            movetime: Some(Duration::from_millis(self.bot.movetime_ms)),
-        }
+        to_go_limits(self.bot.depth, self.bot.movetime_ms)
     }
 
     /// Limits for the side about to move: BvB uses per-color strength, otherwise shared bot.
@@ -359,41 +380,27 @@ impl Config {
     }
 
     pub fn eval_go_limits(&self) -> GoLimits {
-        GoLimits {
-            depth: Some(self.eval.depth),
-            movetime: Some(Duration::from_millis(self.eval.movetime_ms)),
-        }
+        to_go_limits(self.eval.depth, self.eval.movetime_ms)
     }
 
     pub fn analysis_go_limits(&self) -> GoLimits {
-        GoLimits {
-            depth: Some(self.analysis.depth),
-            movetime: Some(Duration::from_millis(self.analysis.movetime_ms)),
-        }
+        to_go_limits(self.analysis.depth, self.analysis.movetime_ms)
     }
 
     pub fn clamp(&mut self) {
         // Clamp overhead first so the movetime floor is computed from a sane value.
         self.engine.move_overhead_ms = self.engine.move_overhead_ms.clamp(0, MAX_MOVETIME_MS);
         let floor = movetime_floor_ms(self.engine.move_overhead_ms);
-        self.bot.depth = self.bot.depth.clamp(MIN_DEPTH, MAX_DEPTH);
-        self.bot.movetime_ms = self
-            .bot
-            .movetime_ms
-            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS)
-            .max(floor);
+        // Bot / live limits keep their movetime clear of the overhead floor (P7-05).
+        self.bot.depth = clamp_depth(self.bot.depth);
+        self.bot.movetime_ms = clamp_movetime(self.bot.movetime_ms, floor);
         self.bot.white.clamp_with_floor(floor);
         self.bot.black.clamp_with_floor(floor);
-        self.eval.depth = self.eval.depth.clamp(MIN_DEPTH, MAX_DEPTH);
-        self.eval.movetime_ms = self
-            .eval
-            .movetime_ms
-            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
-        self.analysis.depth = self.analysis.depth.clamp(MIN_DEPTH, MAX_DEPTH);
-        self.analysis.movetime_ms = self
-            .analysis
-            .movetime_ms
-            .clamp(MIN_MOVETIME_MS, MAX_MOVETIME_MS);
+        // Eval / analysis are not clock-critical; use the plain minimum.
+        self.eval.depth = clamp_depth(self.eval.depth);
+        self.eval.movetime_ms = clamp_movetime(self.eval.movetime_ms, MIN_MOVETIME_MS);
+        self.analysis.depth = clamp_depth(self.analysis.depth);
+        self.analysis.movetime_ms = clamp_movetime(self.analysis.movetime_ms, MIN_MOVETIME_MS);
         self.engine.hash_mb = self.engine.hash_mb.clamp(MIN_HASH_MB, MAX_HASH_MB);
         self.engine.threads = self.engine.threads.clamp(MIN_THREADS, MAX_THREADS);
         self.engine.elo = self.engine.elo.clamp(MIN_ELO, MAX_ELO);
@@ -407,15 +414,12 @@ impl Config {
     }
 
     pub fn adjust_depth(&mut self, delta: i32) {
-        let next = (self.bot.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
-        self.bot.depth = next as u32;
+        self.bot.depth = adjust_depth(self.bot.depth, delta);
     }
 
     pub fn adjust_movetime(&mut self, delta_ms: i64) {
         let floor = movetime_floor_ms(self.engine.move_overhead_ms);
-        let next = (self.bot.movetime_ms as i64 + delta_ms)
-            .clamp(floor as i64, MAX_MOVETIME_MS as i64);
-        self.bot.movetime_ms = next as u64;
+        self.bot.movetime_ms = adjust_movetime(self.bot.movetime_ms, delta_ms, floor);
     }
 
     pub fn adjust_white_depth(&mut self, delta: i32) {
@@ -437,25 +441,20 @@ impl Config {
     }
 
     pub fn adjust_eval_depth(&mut self, delta: i32) {
-        let next = (self.eval.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
-        self.eval.depth = next as u32;
+        self.eval.depth = adjust_depth(self.eval.depth, delta);
     }
 
     pub fn adjust_eval_movetime(&mut self, delta_ms: i64) {
-        let next = (self.eval.movetime_ms as i64 + delta_ms)
-            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
-        self.eval.movetime_ms = next as u64;
+        self.eval.movetime_ms = adjust_movetime(self.eval.movetime_ms, delta_ms, MIN_MOVETIME_MS);
     }
 
     pub fn adjust_analysis_depth(&mut self, delta: i32) {
-        let next = (self.analysis.depth as i32 + delta).clamp(MIN_DEPTH as i32, MAX_DEPTH as i32);
-        self.analysis.depth = next as u32;
+        self.analysis.depth = adjust_depth(self.analysis.depth, delta);
     }
 
     pub fn adjust_analysis_movetime(&mut self, delta_ms: i64) {
-        let next = (self.analysis.movetime_ms as i64 + delta_ms)
-            .clamp(MIN_MOVETIME_MS as i64, MAX_MOVETIME_MS as i64);
-        self.analysis.movetime_ms = next as u64;
+        self.analysis.movetime_ms =
+            adjust_movetime(self.analysis.movetime_ms, delta_ms, MIN_MOVETIME_MS);
     }
 }
 
