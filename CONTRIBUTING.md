@@ -39,6 +39,7 @@ Requires [cutechess-cli](https://github.com/cutechess/cutechess) on `PATH`.
 
 ## Scope notes
 
-- One selective-search feature at a time (see [research/tasks.md](research/tasks.md)).
+- Follow the Phase 2 task board: [research/tasks.md](research/tasks.md) (trained eval, SPRT, Lichess go-live). Phase 1 history: [research/tasks-phase1.md](research/tasks-phase1.md).
+- One strength change at a time after the trained net lands; retune with SPRT.
 - Copy structure from Stockfish/Reckless research docs; retune constants with SPRT.
 - Speculative ideas stay in [research/uniqueideas.md](research/uniqueideas.md) — not the default strength path.

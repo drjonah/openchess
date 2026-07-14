@@ -110,7 +110,7 @@ cargo run --release -- arena watch --games 4 --depth 6 --concurrency 2
 | `m` | Mirror this slot’s strengths to all slots |
 | `q` / `Esc` | Quit |
 
-Design notes: [research/ARENA.md](research/ARENA.md) · task board P11 in [research/tasks.md](research/tasks.md).
+Design notes: [research/ARENA.md](research/ARENA.md) · Phase 1 tasks **P11** in [research/tasks-phase1.md](research/tasks-phase1.md).
 
 ### Lichess bot (optional)
 
@@ -121,4 +121,4 @@ cargo run --features lichess -- lichess account
 cargo run --features lichess -- lichess run --dry-run
 ```
 
-Details: [research/LICHESS.md](research/LICHESS.md) · task board P9 in [research/tasks.md](research/tasks.md).
+Details: [research/LICHESS.md](research/LICHESS.md) · Phase 2 go-live **L2** in [research/tasks.md](research/tasks.md) · Phase 1 CLI **P9** in [research/tasks-phase1.md](research/tasks-phase1.md).

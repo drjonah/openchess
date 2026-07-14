@@ -2,7 +2,7 @@
 
 Research notes on why OpenChess plays odd first moves today, and how to improve opening quality — especially under **short movetime** or **shallow effective depth**.
 
-**Related:** [tasks.md](./tasks.md) (P9 Lichess bot) · [chesswiki §5](./chesswiki.md#5-knowledge-outside-the-search) · [LICHESS §14](./LICHESS.md#14-open-questions) · `testing/books/openings.epd`
+**Related:** [tasks-phase1.md](./tasks-phase1.md) (P10 book — complete) · [tasks.md](./tasks.md) (Phase 2 **M2** SPRT openings / **Q2** trained eval) · [chesswiki §5](./chesswiki.md#5-knowledge-outside-the-search) · [LICHESS §14](./LICHESS.md#14-open-questions) · `testing/books/openings.epd`
 
 ---
 
@@ -181,27 +181,36 @@ Fishtest uses fixed opening suites for a reason: even SF benefits from books at 
 
 ---
 
-## 4. Proposed implementation phases
+## 4. Implementation phases (status)
 
-### Phase 1 — Stop the bleeding (P9-adjacent)
+Book work from this doc shipped in Phase 1 (**P2-07**, **P7-05**, **P10-01..P10-10**, **TUI-04**, **P7-06**). Canonical history: [tasks-phase1.md](./tasks-phase1.md). Do **not** re-implement these checklists.
 
-- [ ] Fix search fallback when zero depths complete (Option C).
-- [ ] Config clamp: `movetime_ms >= 200` (or `move_overhead + 100`).
-- [ ] Hardcoded first-move table for ply ≤ 2 (Option B).
-- [ ] Hook in `tui/session.rs` before `spawn_search` (and UCI `go` for consistency).
+Remaining related work lives on the Phase 2 board:
 
-### Phase 2 — Real book module
+- Larger SPRT opening set → [tasks.md **M2-01**](./tasks.md#m2--measurement)
+- Trained NNUE (opening feel after book exit) → [tasks.md **Q2**](./tasks.md#q2--trained-eval)
+- Lichess go-live smoke (book already injected in Phase 1 P10-06) → [tasks.md **L2**](./tasks.md#l2--lichess-go-live)
 
-- [ ] `src/book/mod.rs`: probe API `fn best_move(&self, pos: &Position, rng: &mut impl Rng) -> Option<Move>`.
-- [ ] Load Polyglot **or** expand `openings.epd` into a keyed move list with weights.
-- [ ] Config: `book.enabled`, `book.plies`, `book.path`.
-- [ ] UCI: `setoption name OwnBook`, `setoption name BookFile`.
+### Phase 1 — Stop the bleeding (done)
 
-### Phase 3 — Lichess & testing
+- [x] Fix search fallback when zero depths complete (Option C) — **P2-07**
+- [x] Config clamp: movetime floor vs overhead (Option C / **P7-05**)
+- [x] Hardcoded first-move table for ply ≤ 2 (Option B) — **P10-01**
+- [x] Hook in `tui/session.rs` before `spawn_search` (and UCI `go`) — **TUI-04** / **P7-06**
 
-- [ ] Lichess bot: book before search; map clock to movetime per [LICHESS.md](./LICHESS.md).
-- [ ] Keep `openings.epd` for SPRT; optionally align book positions with EPD set for consistent testing.
-- [ ] SPRT with `OwnBook off` measures search+eval; bot play uses `OwnBook on`.
+### Phase 2 — Real book module (done)
+
+- [x] `src/book/mod.rs` probe API — **P10-02**
+- [x] Polyglot loader and/or EPD-keyed moves — **P10-03**, **P10-05**
+- [x] Config: `book.enabled`, plies, path — **P10-02**
+- [x] UCI: `OwnBook`, `BookFile`, `BookDepth` — **P7-06**
+
+### Phase 3 — Lichess & testing (done in Phase 1 code; live/SPRT scale in Phase 2)
+
+- [x] Lichess bot: book before search — **P10-06**
+- [x] SPRT uses `OwnBook false`; bot/TUI default on — **P10-07**
+- [ ] Grow SPRT opening set past smoke EPD — **M2-01** (Phase 2)
+- [ ] Live Lichess casual smoke with book on — **L2-02** (Phase 2)
 
 ---
 
@@ -265,4 +274,4 @@ Common rules:
 
 ---
 
-*Last updated: 2026-07-12 — documents observed TUI bot behavior and abort fallback; implementation tracked via tasks P9 / future book task.*
+*Last updated: 2026-07-14 — Phase 1 book tasks complete ([tasks-phase1.md](./tasks-phase1.md)); remaining SPRT scale / Lichess smoke tracked on [tasks.md](./tasks.md).*

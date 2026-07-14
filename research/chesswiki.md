@@ -2,7 +2,8 @@
 
 Research dump distilled from [Chess Programming Wiki](https://www.chessprogramming.org/Main_Page) — the ideas that actually make a strong engine, not a catalog of every page.
 
-**Agent task board:** [tasks.md](./tasks.md) — engine pillars (P1–P8) and parallelizable implementation tasks distilled from this research (with [reckless.md](./reckless.md) / [stockfish.md](./stockfish.md)).
+**Agent task board (Phase 2):** [tasks.md](./tasks.md) — trained eval, measurement, Lichess go-live, Syzygy, throughput.  
+**Phase 1 archive:** [tasks-phase1.md](./tasks-phase1.md) — completed pillars P1–P11 distilled from this research (with [reckless.md](./reckless.md) / [stockfish.md](./stockfish.md)).
 
 Primary sources: [Getting Started](https://www.chessprogramming.org/Getting_Started), [Board Representation](https://www.chessprogramming.org/Board_Representation), [Search](https://www.chessprogramming.org/Search), [Search Progression](https://www.chessprogramming.org/Search_Progression), [Evaluation](https://www.chessprogramming.org/Evaluation), [NNUE](https://www.chessprogramming.org/NNUE), [Move Ordering](https://www.chessprogramming.org/Move_Ordering), [Transposition Table](https://www.chessprogramming.org/Transposition_Table), [Null Move Pruning](https://www.chessprogramming.org/Null_Move_Pruning), [Late Move Reductions](https://www.chessprogramming.org/Late_Move_Reductions), [Syzygy Bases](https://www.chessprogramming.org/Syzygy_Bases), [Engine Testing](https://www.chessprogramming.org/Engine_Testing), [UCI](https://www.chessprogramming.org/UCI).
 

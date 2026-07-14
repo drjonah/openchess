@@ -2,8 +2,9 @@
 
 > **Language:** Rust  
 > **Paradigm:** Stockfish-family — bitboards + Lazy SMP alpha-beta (PVS) + selective search + incremental NNUE + shared TT + history/corrections + SPRT  
-> **Task board:** [research/tasks.md](research/tasks.md)  
-> **Research:** [research/chesswiki.md](research/chesswiki.md) · [research/reckless.md](research/reckless.md) · [research/stockfish.md](research/stockfish.md) · [research/LICHESS.md](research/LICHESS.md) (P9)
+> **Task board (Phase 2):** [research/tasks.md](research/tasks.md)  
+> **Phase 1 archive:** [research/tasks-phase1.md](research/tasks-phase1.md)  
+> **Research:** [research/chesswiki.md](research/chesswiki.md) · [research/reckless.md](research/reckless.md) · [research/stockfish.md](research/stockfish.md) · [research/LICHESS.md](research/LICHESS.md) (L2)
 
 This document is the Rust-facing blueprint. Agents implement against [research/tasks.md](research/tasks.md); this file defines **where code lives**, **who owns what**, and **how data flows**.
 
@@ -347,4 +348,4 @@ perft (P1)  →  UCI smoke (P7)  →  fixed-depth/fixed-node bench
 
 ---
 
-*Architecture for OpenChess (Rust), aligned with research/tasks.md — 2026-07-10.*
+*Architecture for OpenChess (Rust), aligned with research/tasks.md (Phase 2) — Phase 1 archive in research/tasks-phase1.md.*

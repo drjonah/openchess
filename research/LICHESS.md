@@ -2,7 +2,8 @@
 
 > **Audience:** agents wiring OpenChess to play on Lichess (bot-vs-bot testing, live Elo feedback, regression games).
 > **Companion docs:** [ARCHITECTURE.md](../ARCHITECTURE.md) · [chesswiki.md](./chesswiki.md) §6 (protocols)
-> **Agent task board:** [tasks.md](./tasks.md) — pillar **P9 Lichess** (P9-01..P9-07)
+> **Agent task board (Phase 2):** [tasks.md](./tasks.md) — pillar **L2 Lichess go-live** (L2-01..L2-07)  
+> **Phase 1 archive:** [tasks-phase1.md](./tasks-phase1.md) — completed **P9** CLI/client (P9-01..P9-07)
 > **Primary source:** [Lichess API reference — Bot](https://lichess.org/api#tag/bot/GET/api/stream/event) (OpenAPI v2.0.152)
 > **Reference client:** [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) (Python bridge; de-facto spec for edge cases)
 > **Rust client (optional dep):** [litchee](https://github.com/obazin/litchee) — async, full API coverage, NDJSON streaming
@@ -437,7 +438,9 @@ clock_increment = 1
 
 ## 12. Phased tasks
 
-Canonical checklist: [tasks.md § P9](./tasks.md#p9--lichess-bot-cli). Summary:
+### Phase 1 (complete) — CLI / client
+
+Historical checklist: [tasks-phase1.md § P9](./tasks-phase1.md#p9--lichess-bot-cli). Summary of what shipped:
 
 | ID | Deliverable | Acceptance |
 |---|---|---|
@@ -448,6 +451,22 @@ Canonical checklist: [tasks.md § P9](./tasks.md#p9--lichess-bot-cli). Summary:
 | **P9-05** | Outbound challenge | Challenge named bot; play game |
 | **P9-06** | PGN export + game log | Save `GET /game/export/{id}` after `gameFinish` |
 | **P9-07** | Reconnect + 429 backoff | Survive forced disconnect in manual test |
+
+Live acceptance for P9-03/05/06/07 was offline-tested; **token smoke moves to Phase 2**.
+
+### Phase 2 — Go-live
+
+Canonical checklist: [tasks.md § L2](./tasks.md#l2--lichess-go-live). Summary:
+
+| ID | Deliverable | Acceptance |
+|---|---|---|
+| **L2-01** | Operator docs + smoke checklist | Dry-run → play from docs alone |
+| **L2-02** | Live casual game smoke | One full casual game; no illegal/time bugs |
+| **L2-03** | Reconnect + PGN verify | Forced disconnect recovers; PGN matches site |
+| **L2-04** | Ops config file + CLI overrides | File drives accept filter |
+| **L2-05** | Bots-preferred / rated-off defaults | No surprise rated human spam |
+| **L2-06** | Rated gate after strength bar | Documented SPRT/local bar before `accept_rated` |
+| **L2-07** | Concurrent games | ≥2 games stable under rate limits |
 
 ---
 

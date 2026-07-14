@@ -1,10 +1,10 @@
 # Arena Lab — Bulk Bot-vs-Bot Battles
 
 > **Audience:** agents implementing OpenChess **P11 Arena lab** — running many concurrent local Bot-vs-Bot games for development, tuning, and observation.
-> **Companion docs:** [ARCHITECTURE.md](../ARCHITECTURE.md) §3 (dual fronts) · [tasks.md § P11](./tasks.md#p11--arena-lab-bulk-bot-vs-bot) · [chesswiki §7](./chesswiki.md#7-measurement--elo) (informal dev runs vs SPRT) · [LICHESS.md](./LICHESS.md) (online play, contrast) · [openings.md](./openings.md) (book hook, TUI-04)
+> **Companion docs:** [ARCHITECTURE.md](../ARCHITECTURE.md) §3 (dual fronts) · [tasks-phase1.md § P11](./tasks-phase1.md#p11--arena-lab-bulk-bot-vs-bot) · [chesswiki §7](./chesswiki.md#7-measurement--elo) (informal dev runs vs SPRT) · [LICHESS.md](./LICHESS.md) (online play, contrast) · [openings.md](./openings.md) (book hook, TUI-04)
 > **Task board:** pillar **P11** (P11-01..P11-09)
 >
-> **Not** formal SPRT ([P8-03](./tasks.md#p8--scale--science) owns `testing/sprt.sh`). **Not** online Lichess ([P9](./tasks.md#p9--lichess-bot-cli)). **Not** the single-game human TUI ([P7b](./tasks.md#p7b--terminal-ui-ratatui)). The arena is an in-process lab for watching and tuning the engine against itself at scale.
+> **Not** formal SPRT ([tasks.md § M2](./tasks.md#m2--measurement) / Phase 1 [P8-03](./tasks-phase1.md#p8--scale--science) owns `testing/sprt.sh`). **Not** online Lichess ([tasks.md § L2](./tasks.md#l2--lichess-go-live) / Phase 1 [P9](./tasks-phase1.md#p9--lichess-bot-cli)). **Not** the single-game human TUI ([P7b](./tasks-phase1.md#p7b--terminal-ui-ratatui)). The arena is an in-process lab for watching and tuning the engine against itself at scale.
 
 ---
 
@@ -265,7 +265,7 @@ Keep per-test limits shallow (`depth: 1`, or short movetime) so `cargo test` sta
 | **D — Scale & record** | P11-07, P11-08 | Named profiles + slot assignment; PGN/JSONL/session-log export |
 | **X — Converge** | P11-09 | Extract shared `GameSession` from `tui/session.rs`; TUI + arena share one search-spawn path (TUI behavior unchanged) |
 
-Dependencies (from tasks.md): P11-01 needs P2-02 (iterative deepening ✅), P7-02 (time mgmt ✅), P1-10 (perft ✅) — **all met**, so P11-01 is unblocked today. TUI-04 / P10 book hooks are parallel-ok and can seed opening lines into slots later.
+Dependencies (from [tasks-phase1.md](./tasks-phase1.md)): P11-01 needs P2-02 (iterative deepening ✅), P7-02 (time mgmt ✅), P1-10 (perft ✅) — **all met**; P11 shipped complete. TUI-04 / P10 book hooks also landed.
 
 ---
 
@@ -286,7 +286,7 @@ Dependencies (from tasks.md): P11-01 needs P2-02 (iterative deepening ✅), P7-0
 - `src/search/mod.rs` — `go`, `Limits`, `SearchResult`, `ThreadData`
 - `src/board/draw.rs` — `GameResult`
 - `src/tui/game.rs` — `AnalyzedGame`, `PlyRecord`, `MoveClass`
-- [tasks.md § P11](./tasks.md#p11--arena-lab-bulk-bot-vs-bot) — canonical task checklist
+- [tasks-phase1.md § P11](./tasks-phase1.md#p11--arena-lab-bulk-bot-vs-bot) — completed Phase 1 arena checklist
 - [ARCHITECTURE.md](../ARCHITECTURE.md) §3 (module layout), §7 (data flow), §8 (concurrency)
 - [chesswiki §7](./chesswiki.md#7-measurement--elo) — informal dev runs vs SPRT gate
 
