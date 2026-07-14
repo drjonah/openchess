@@ -265,12 +265,13 @@ flowchart LR
   - **Acceptance:** Toggleable; SPRT or fixed-node smoke vs baseline documents node/Elo effect  
   - **Research:** chesswiki NMP · Phase 1 P5-01 (no verification yet)
 
-- [ ] **S2-02** — SEE recapture promotions  
+- [x] **S2-02** — SEE recapture promotions  
   - **Deps:** none  
   - **Parallel-ok:** S2-01, L2-*, Q2-*  
   - **Deliverable:** Model promotion on recapture swaps in SEE  
   - **Acceptance:** Fixture set covers promo recapture signs (winning/losing)  
-  - **Research:** Phase 1 P1-08 Note · chesswiki SEE
+  - **Research:** Phase 1 P1-08 Note · chesswiki SEE  
+  - **Note:** Done — pawn recaptures onto the promo rank get queen-promo bonus; `tests/see.rs` covers winning/losing signs.
 
 - [ ] **S2-03** — Optional ponder  
   - **Deps:** Q2-03  
