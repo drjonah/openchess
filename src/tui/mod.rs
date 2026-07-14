@@ -85,6 +85,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
         session.poll();
         maybe_start_engine(&mut session, &config);
         maybe_refresh_live_eval(&mut session, &config);
+        let mode_picker_visible =
+            session.needs_mode_picker() && !show_settings && !show_help;
         terminal.draw(|frame| {
             draw(
                 frame,
@@ -93,7 +95,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 &config,
                 show_help.then_some(help_page),
                 show_settings.then_some(&settings),
-                session.needs_mode_picker().then_some(&mode_picker),
+                mode_picker_visible.then_some(&mode_picker),
                 #[cfg(feature = "chesscom")]
                 game_picker.as_ref(),
             )
@@ -354,6 +356,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 if let Some(picker) = game_picker.as_ref() {
                     let user = picker.username.clone();
                     session.set_status(format!("Refreshing {user}…"));
+                    let mode_picker_visible =
+                        session.needs_mode_picker() && !show_settings && !show_help;
                     terminal.draw(|frame| {
                         draw(
                             frame,
@@ -362,7 +366,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             &config,
                             show_help.then_some(help_page),
                             show_settings.then_some(&settings),
-                            session.needs_mode_picker().then_some(&mode_picker),
+                            mode_picker_visible.then_some(&mode_picker),
                             game_picker.as_ref(),
                         )
                     })?;
@@ -392,6 +396,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                 if importing {
                     session.set_status("Importing…");
                     // Draw status before any blocking HTTP.
+                    let mode_picker_visible =
+                        session.needs_mode_picker() && !show_settings && !show_help;
                     terminal.draw(|frame| {
                         draw(
                             frame,
@@ -400,7 +406,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> 
                             &config,
                             show_help.then_some(help_page),
                             show_settings.then_some(&settings),
-                            session.needs_mode_picker().then_some(&mode_picker),
+                            mode_picker_visible.then_some(&mode_picker),
                             #[cfg(feature = "chesscom")]
                             game_picker.as_ref(),
                         )
