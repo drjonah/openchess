@@ -3,6 +3,7 @@
 pub mod arena;
 pub mod board;
 pub mod book;
+pub mod cli_util;
 pub mod config;
 pub mod eval;
 pub mod history;
